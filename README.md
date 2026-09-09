@@ -63,6 +63,12 @@ http://localhost:8080
 
 Semua di `.env`. Lihat `.env.example` untuk referensi lengkap.
 
+Parameter AI & bot juga bisa diubah langsung dari dashboard (menu Pengaturan):
+- Config AI (base URL, key, model)
+- Pengaturan Bot (daily max loss, risk per trade, trailing stop, break-even, R/R, cooldown, time stop, scan interval, AI confidence min)
+
+Perubahan berlaku setelah restart bot.
+
 Penting:
 - `DRY_RUN=1` → mode aman (tidak pakai uang asli)
 - `DRY_RUN=0` → **LIVE, pakai dana asli**

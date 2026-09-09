@@ -143,6 +143,33 @@ input{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background
 <button class="btn btn-export" onclick="saveConfig()">💾 Simpan & Test Config</button>
 <div id="cfgMsg" style="margin-top:10px;font-size:0.85em"></div>
 </div>
+
+<div class="card">
+<h3>⚙️ Pengaturan Bot</h3>
+<div class="sub" style="margin-bottom:10px">Ubah parameter risk & scan. Berlaku setelah restart bot.</div>
+<div class="row" style="margin-bottom:10px">
+<div class="col"><div class="label">Daily Max Loss (mis. 0.01 = 1%)</div><input id="botDailyMaxLoss"></div>
+<div class="col"><div class="label">Risk Per Trade (0.005 = 0.5%)</div><input id="botRiskPerTrade"></div>
+<div class="col"><div class="label">Max Risk Per Trade</div><input id="botMaxRiskPerTrade"></div>
+</div>
+<div class="row" style="margin-bottom:10px">
+<div class="col"><div class="label">Trailing Stop (0.005 = 0.5%)</div><input id="botTrailingStop"></div>
+<div class="col"><div class="label">Break-even Trigger (0.005 = 0.5%)</div><input id="botBreakevenTrigger"></div>
+<div class="col"><div class="label">Min R/R Ratio</div><input id="botMinRR"></div>
+</div>
+<div class="row" style="margin-bottom:10px">
+<div class="col"><div class="label">Cooldown Jam (setelah 3 loss)</div><input id="botCooldownHours"></div>
+<div class="col"><div class="label">Time Stop Jam</div><input id="botTimeStopHours"></div>
+<div class="col"><div class="label">Scan Interval (detik)</div><input id="botScanInterval"></div>
+</div>
+<div class="row" style="margin-bottom:14px">
+<div class="col"><div class="label">AI Confidence Min (entry)</div><input id="botAiConfMin"></div>
+<div class="col"></div>
+<div class="col"></div>
+</div>
+<button class="btn btn-export" onclick="saveBotConfig()">💾 Simpan Pengaturan Bot</button>
+<div id="botCfgMsg" style="margin-top:10px;font-size:0.85em"></div>
+</div>
 </div>
 
 <script>
@@ -151,7 +178,7 @@ document.querySelectorAll('.nav a').forEach(a=>a.classList.remove('active'));
 el.classList.add('active');
 document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
 document.getElementById('page-'+name).classList.add('active');
-if(name==='settings')loadConfig();
+if(name==='settings'){loadConfig();loadBotConfig();}
 }
 function fmt(n){return n==null?"-":Number(n).toFixed(2)}
 async function fetchStatus(){
@@ -232,6 +259,42 @@ document.getElementById('cfgBase').value=d.base_url||'';
 document.getElementById('cfgKey').value=d.api_key||'';
 document.getElementById('cfgModel').value=d.model||'';
 }catch(e){}
+}
+async function loadBotConfig(){
+try{
+const r=await fetch('/botconfig');const d=await r.json();
+document.getElementById('botDailyMaxLoss').value=d.daily_max_loss||'';
+document.getElementById('botRiskPerTrade').value=d.risk_per_trade||'';
+document.getElementById('botMaxRiskPerTrade').value=d.max_risk_per_trade||'';
+document.getElementById('botTrailingStop').value=d.trailing_stop||'';
+document.getElementById('botBreakevenTrigger').value=d.breakeven_trigger||'';
+document.getElementById('botMinRR').value=d.min_rr||'';
+document.getElementById('botCooldownHours').value=d.cooldown_hours||'';
+document.getElementById('botTimeStopHours').value=d.time_stop_hours||'';
+document.getElementById('botScanInterval').value=d.scan_interval||'';
+document.getElementById('botAiConfMin').value=d.ai_confidence_min||'';
+}catch(e){}
+}
+async function saveBotConfig(){
+const body={
+daily_max_loss:document.getElementById('botDailyMaxLoss').value.trim(),
+risk_per_trade:document.getElementById('botRiskPerTrade').value.trim(),
+max_risk_per_trade:document.getElementById('botMaxRiskPerTrade').value.trim(),
+trailing_stop:document.getElementById('botTrailingStop').value.trim(),
+breakeven_trigger:document.getElementById('botBreakevenTrigger').value.trim(),
+min_rr:document.getElementById('botMinRR').value.trim(),
+cooldown_hours:document.getElementById('botCooldownHours').value.trim(),
+time_stop_hours:document.getElementById('botTimeStopHours').value.trim(),
+scan_interval:document.getElementById('botScanInterval').value.trim(),
+ai_confidence_min:document.getElementById('botAiConfMin').value.trim(),
+};
+const msg=document.getElementById('botCfgMsg');
+msg.textContent='Menyimpan...';
+msg.className='yellow';
+const r=await fetch('/botconfig',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+const d=await r.json();
+if(d.ok){msg.textContent='✅ '+d.msg;msg.className='green';}
+else{msg.textContent='❌ '+d.msg;msg.className='red';}
 }
 function renderCandidates(d){
 const cands=d.candidates||[];
@@ -404,6 +467,20 @@ class Handler(BaseHTTPRequestHandler):
                 "api_key": env.get("AI_API_KEY", ""),
                 "model": env.get("AI_MODEL", ""),
             })
+        elif path == "/botconfig":
+            env = _load_env()
+            self._json({
+                "daily_max_loss": env.get("DAILY_MAX_LOSS", "0.01"),
+                "risk_per_trade": env.get("RISK_PER_TRADE", "0.005"),
+                "max_risk_per_trade": env.get("MAX_RISK_PER_TRADE", "0.01"),
+                "trailing_stop": env.get("TRAILING_STOP", "0.005"),
+                "breakeven_trigger": env.get("BREAKEVEN_TRIGGER", "0.005"),
+                "min_rr": env.get("MIN_RR", "1.5"),
+                "cooldown_hours": env.get("COOLDOWN_HOURS", "6"),
+                "time_stop_hours": env.get("TIME_STOP_HOURS", "4"),
+                "scan_interval": env.get("SCAN_INTERVAL_SECONDS", "180"),
+                "ai_confidence_min": env.get("AI_CONFIDENCE_MIN", "60"),
+            })
         elif path == "/market":
             try:
                 import market_analyzer
@@ -471,6 +548,35 @@ class Handler(BaseHTTPRequestHandler):
 
             _save_env(updates)
             self._json({"ok": True, "msg": "config disimpan. Restart bot agar berlaku."})
+        elif path == "/botconfig":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b"{}"
+            try:
+                data = json.loads(body)
+            except Exception:
+                data = {}
+            mapping = {
+                "daily_max_loss": "DAILY_MAX_LOSS",
+                "risk_per_trade": "RISK_PER_TRADE",
+                "max_risk_per_trade": "MAX_RISK_PER_TRADE",
+                "trailing_stop": "TRAILING_STOP",
+                "breakeven_trigger": "BREAKEVEN_TRIGGER",
+                "min_rr": "MIN_RR",
+                "cooldown_hours": "COOLDOWN_HOURS",
+                "time_stop_hours": "TIME_STOP_HOURS",
+                "scan_interval": "SCAN_INTERVAL_SECONDS",
+                "ai_confidence_min": "AI_CONFIDENCE_MIN",
+            }
+            updates = {}
+            for key, env_key in mapping.items():
+                val = (data.get(key) or "").strip()
+                if val:
+                    updates[env_key] = val
+            if not updates:
+                self._json({"ok": False, "msg": "tidak ada perubahan"})
+                return
+            _save_env(updates)
+            self._json({"ok": True, "msg": "pengaturan bot disimpan. Restart bot agar berlaku."})
         else:
             self.send_response(404)
             self.end_headers()
