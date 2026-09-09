@@ -10,4 +10,5 @@ bot_state.json
 trades.json
 candidate_memory.json
 history/
+riwayat_transaksi/
 riwayat_*.txt

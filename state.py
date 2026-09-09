@@ -5,7 +5,7 @@ import time
 
 BASE_DIR = os.path.dirname(__file__)
 TRADES_FILE = os.path.join(BASE_DIR, "trades.json")
-HISTORY_DIR = os.path.join(BASE_DIR, "history")
+HISTORY_DIR = os.path.join(BASE_DIR, "riwayat_transaksi")
 BOT_STATE_FILE = os.path.join(BASE_DIR, "bot_state.json")
 
 
@@ -151,7 +151,8 @@ class BotState:
         if summary is None:
             summary = self._build_summary(date_str)
         lines = self._format_txt(summary)
-        f = os.path.join(BASE_DIR, f"riwayat_{date_str}.txt")
+        f = os.path.join(HISTORY_DIR, f"riwayat_{date_str}.txt")
+        os.makedirs(HISTORY_DIR, exist_ok=True)
         with open(f, "w") as fp:
             fp.write(lines)
         return f
