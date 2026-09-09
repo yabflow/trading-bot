@@ -10,7 +10,7 @@ AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.thirtystore.com/v1")
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 AI_MODEL = os.getenv("AI_MODEL", "thirty/deepseek-v4-pro-0813")
 
-PROMPT = """Kamu analis trading crypto (Bybit Spot) berpengalaman. Analisis SATU kandidat coin.
+PROMPT = """Kamu analis trading crypto (Bybit USDT Perpetual Futures) berpengalaman. Analisis SATU kandidat coin.
 
 Data kandidat (lengkap):
 {market_data}
@@ -24,23 +24,35 @@ Analisis yang WAJIB dilakukan:
 4. VOLUME: apakah volume naik mendukung pergerakan? Breakout tanpa volume = palsu.
 5. RISK/REWARD: apakah potensi profit >= 1.5x risiko? Hitung dari entry ke TP vs entry ke SL.
 
-CONTOH analisis BAGUS (BUY layak):
+Arah trading (LONG/SHORT):
+- long: masuk beli, untung jika harga NAIK. SL di bawah entry, TP di atas entry.
+- short: masuk jual, untung jika harga TURUN. SL di atas entry, TP di bawah entry.
+- Pilih short hanya jika tren multi-TF jelas bearish & BTC mendukung penurunan.
+
+CONTOH analisis BAGUS (long layak):
 "BTC bullish, SOLUSDT 15m/1h/4h bullish searah, baru breakout resistance 105.2 dengan volume spike 3x, RSI 58 sehat. Entry 105.5, SL 103.5 (di bawah support), TP 109.5 (R/R 2.0)."
 
-CONTOH analisis BURUK (harus HOLD):
+CONTOH analisis BAGUS (short layak):
+"BTC bearish, ETHUSDT 15m/1h/4h bearish searah, breakdown support 3000 volume naik, RSI 35. Entry 2995, SL 3020 (di atas resistance), TP 2910 (R/R 3.4)."
+
+CONTOH analisis BURUK (harus hold):
 "harga naik 10% tapi BTC bearish, 1h/4h masih bearish melawan arus, volume turun, dekat resistance kuat. Risiko ditolak tinggi."
 
 KEPUTUSAN:
-- BUY hanya jika: trend searah (multi-TF), BTC mendukung, volume konfirmasi, R/R >= 1.5.
-- HOLD jika: keraguan, breakout belum confirmed, atau melawan arus BTC.
-- JANGAN memaksakan entry hanya karena harga naik.
+- long/short hanya jika: trend searah (multi-TF), BTC mendukung, volume konfirmasi, R/R >= 1.5.
+- hold jika: keraguan, breakout belum confirmed, melawan arus BTC, atau tidak ada setup jelas.
+- JANGAN memaksakan entry hanya karena harga bergerak. Lebih baik tidak trading daripada setup jelek.
 
 Balas HANYA JSON (tanpa teks lain):
-{{"action":"buy"|"hold","confidence":0-100,"entry":angka,"stop_loss":angka,"take_profit":angka,"setup_type":"breakout|momentum|pullback|trend_continuation|volume_spike|other","reason":"satu kalimat"}}"""
+{{"action":"long"|"short"|"hold","confidence":0-100,"entry":angka,"stop_loss":angka,"take_profit":angka,"setup_type":"breakout|momentum|pullback|trend_continuation|volume_spike|other","reason":"satu kalimat"}}"""
 
 
 def analyze_candidate(candidate_data, position="none"):
-    return analyze(candidate_data, position)
+    res = analyze(candidate_data, position)
+    a = res.get("action", "hold")
+    if a == "buy":
+        res["action"] = "long"
+    return res
 
 
 def analyze(market_data, position):

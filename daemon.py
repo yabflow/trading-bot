@@ -173,18 +173,18 @@ input{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background
 <div class="col"><div class="label">Max Risk Per Trade</div><input id="botMaxRiskPerTrade"></div>
 </div>
 <div class="row" style="margin-bottom:10px">
+<div class="col"><div class="label">Leverage (1 = tanpa amplifikasi)</div><input id="botLeverage"></div>
 <div class="col"><div class="label">Trailing Stop (0.005 = 0.5%)</div><input id="botTrailingStop"></div>
 <div class="col"><div class="label">Break-even Trigger (0.005 = 0.5%)</div><input id="botBreakevenTrigger"></div>
-<div class="col"><div class="label">Min R/R Ratio</div><input id="botMinRR"></div>
 </div>
 <div class="row" style="margin-bottom:10px">
+<div class="col"><div class="label">Min R/R Ratio</div><input id="botMinRR"></div>
 <div class="col"><div class="label">Cooldown Jam (setelah 3 loss)</div><input id="botCooldownHours"></div>
 <div class="col"><div class="label">Time Stop Jam</div><input id="botTimeStopHours"></div>
-<div class="col"><div class="label">Scan Interval (detik)</div><input id="botScanInterval"></div>
 </div>
 <div class="row" style="margin-bottom:14px">
+<div class="col"><div class="label">Scan Interval (detik)</div><input id="botScanInterval"></div>
 <div class="col"><div class="label">AI Confidence Min (entry)</div><input id="botAiConfMin"></div>
-<div class="col"></div>
 <div class="col"></div>
 </div>
 <button class="btn btn-export" onclick="saveBotConfig()">💾 Simpan Pengaturan Bot</button>
@@ -287,6 +287,7 @@ const r=await fetch('/botconfig');const d=await r.json();
 document.getElementById('botDailyMaxLoss').value=d.daily_max_loss||'';
 document.getElementById('botRiskPerTrade').value=d.risk_per_trade||'';
 document.getElementById('botMaxRiskPerTrade').value=d.max_risk_per_trade||'';
+document.getElementById('botLeverage').value=d.leverage||'';
 document.getElementById('botTrailingStop').value=d.trailing_stop||'';
 document.getElementById('botBreakevenTrigger').value=d.breakeven_trigger||'';
 document.getElementById('botMinRR').value=d.min_rr||'';
@@ -301,6 +302,7 @@ const body={
 daily_max_loss:document.getElementById('botDailyMaxLoss').value.trim(),
 risk_per_trade:document.getElementById('botRiskPerTrade').value.trim(),
 max_risk_per_trade:document.getElementById('botMaxRiskPerTrade').value.trim(),
+leverage:document.getElementById('botLeverage').value.trim(),
 trailing_stop:document.getElementById('botTrailingStop').value.trim(),
 breakeven_trigger:document.getElementById('botBreakevenTrigger').value.trim(),
 min_rr:document.getElementById('botMinRR').value.trim(),
@@ -532,6 +534,7 @@ class Handler(BaseHTTPRequestHandler):
                 "daily_max_loss": env.get("DAILY_MAX_LOSS", "0.01"),
                 "risk_per_trade": env.get("RISK_PER_TRADE", "0.005"),
                 "max_risk_per_trade": env.get("MAX_RISK_PER_TRADE", "0.01"),
+                "leverage": env.get("LEVERAGE", "1"),
                 "trailing_stop": env.get("TRAILING_STOP", "0.005"),
                 "breakeven_trigger": env.get("BREAKEVEN_TRIGGER", "0.005"),
                 "min_rr": env.get("MIN_RR", "1.5"),
@@ -636,6 +639,7 @@ class Handler(BaseHTTPRequestHandler):
                 "daily_max_loss": "DAILY_MAX_LOSS",
                 "risk_per_trade": "RISK_PER_TRADE",
                 "max_risk_per_trade": "MAX_RISK_PER_TRADE",
+                "leverage": "LEVERAGE",
                 "trailing_stop": "TRAILING_STOP",
                 "breakeven_trigger": "BREAKEVEN_TRIGGER",
                 "min_rr": "MIN_RR",

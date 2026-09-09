@@ -17,10 +17,10 @@ def main():
     try:
         t = bc.get_ticker("BTCUSDT")
         price = t["result"]["list"][0]["lastPrice"]
-        results.append(("BTCUSDT market data", "OK"))
+        results.append(("BTCUSDT futures market data", "OK"))
         print(f"BTCUSDT lastPrice: {price}")
     except Exception:
-        results.append(("BTCUSDT market data", "FAIL"))
+        results.append(("BTCUSDT futures market data", "FAIL"))
 
     results.append(("Trading orders", "NOT USED"))
 

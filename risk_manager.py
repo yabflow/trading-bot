@@ -18,6 +18,7 @@ COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "6"))
 BREAKEVEN_TRIGGER = float(os.getenv("BREAKEVEN_TRIGGER", "0.005"))  # profit 0.5% → SL ke entry
 TIME_STOP_HOURS = float(os.getenv("TIME_STOP_HOURS", "4"))          # stuck >4 jam → jual
 RISK_LOW_CONF = float(os.getenv("RISK_LOW_CONF", "0.0035"))         # conf 60-69 pakai risk kecil
+LEVERAGE = float(os.getenv("LEVERAGE", "1"))                        # default 1x (tanpa amplifikasi)
 
 STATE_FILE = os.path.join(os.path.dirname(__file__), "state.json")
 
@@ -28,9 +29,11 @@ class RiskManager:
         self.daily_start_balance = None
         self.daily_start_day = None
         self.cooldown_until = 0
-        self.highest_price = None
+        self.highest_price = None   # untuk trailing long
+        self.lowest_price = None    # untuk trailing short
         self.entry_price = None
         self.entry_time = None
+        self.side = None            # "long" / "short"
         self.breakeven_active = False
         self._load()
 
@@ -70,7 +73,7 @@ class RiskManager:
         if confidence is not None and confidence < 70:
             return RISK_LOW_CONF  # conf 60-69 → entry kecil
         if strong_setup:
-            return MAX_RISK_PER_TRADE
+            return min(MAX_RISK_PER_TRADE, 0.01)  # setup sangat kuat maks 1%
         return RISK_PER_TRADE
 
     def daily_pnl_pct(self, balance):
@@ -90,31 +93,46 @@ class RiskManager:
                 self.cooldown_until = time.time() + COOLDOWN_HOURS * 3600
         self.save()
 
-    def position_size(self, balance, entry, stop_loss, confidence=None):
-        risk_amount = balance * self.current_risk(confidence=confidence)
-        if entry <= stop_loss:
+    def position_size(self, balance, entry, stop_loss, confidence=None, strong_setup=False):
+        """Ukuran posisi (dalam base asset) berdasarkan risk & jarak SL.
+        Futures: risk = (jarak SL / entry) x leverage x notional.
+        qty = (balance * risk_pct) / (jarak SL * leverage)."""
+        risk_amount = balance * self.current_risk(confidence=confidence, strong_setup=strong_setup)
+        if entry == stop_loss or entry <= 0:
             return 0
-        per_unit_loss = entry - stop_loss
-        qty = risk_amount / per_unit_loss
+        per_unit_risk = abs(entry - stop_loss) * LEVERAGE  # kerugian per kontrak jika SL
+        if per_unit_risk <= 0:
+            return 0
+        qty = risk_amount / per_unit_risk
         return qty
 
-    def validate_rr(self, entry, stop_loss, take_profit):
-        if entry <= stop_loss:
+    def validate_rr(self, side, entry, stop_loss, take_profit):
+        """R/R >= MIN_RR untuk arah side."""
+        risk = abs(entry - stop_loss)
+        if risk <= 0:
             return False
-        reward = take_profit - entry
-        risk = entry - stop_loss
+        reward = abs(take_profit - entry)
         return reward / risk >= MIN_RR
 
-    def start_trailing(self, entry_price):
-        self.highest_price = entry_price
+    def start_trailing(self, entry_price, side="long"):
+        self.highest_price = entry_price if side == "long" else None
+        self.lowest_price = entry_price if side == "short" else None
         self.entry_price = entry_price
         self.entry_time = time.time()
+        self.side = side
         self.breakeven_active = False
 
     def trailing_pct(self):
-        if self.entry_price is None or self.highest_price is None:
+        if self.entry_price is None:
             return TRAILING_STOP
-        profit = (self.highest_price - self.entry_price) / self.entry_price
+        if self.side == "short":
+            if self.lowest_price is None:
+                return TRAILING_STOP
+            profit = (self.entry_price - self.lowest_price) / self.entry_price
+        else:
+            if self.highest_price is None:
+                return TRAILING_STOP
+            profit = (self.highest_price - self.entry_price) / self.entry_price
         if profit >= 0.10:
             return 0.017
         if profit >= 0.06:
@@ -126,23 +144,39 @@ class RiskManager:
         return 0.005
 
     def check_trailing(self, current_price):
-        if self.highest_price is None:
-            self.highest_price = current_price
-        if current_price > self.highest_price:
-            self.highest_price = current_price
-        drop = (self.highest_price - current_price) / self.highest_price
-        return drop >= self.trailing_pct()
+        """True jika harga balik melewati trailing % (long: turun, short: naik)."""
+        if self.side == "short":
+            if self.lowest_price is None:
+                self.lowest_price = current_price
+            if current_price < self.lowest_price:
+                self.lowest_price = current_price
+            rise = (current_price - self.lowest_price) / self.lowest_price
+            return rise >= self.trailing_pct()
+        else:
+            if self.highest_price is None:
+                self.highest_price = current_price
+            if current_price > self.highest_price:
+                self.highest_price = current_price
+            drop = (self.highest_price - current_price) / self.highest_price
+            return drop >= self.trailing_pct()
 
     def reset_trailing(self):
         self.highest_price = None
+        self.lowest_price = None
         self.entry_price = None
         self.entry_time = None
+        self.side = None
         self.breakeven_active = False
 
     def check_breakeven(self, current_price):
         """Setelah profit >= BREAKEVEN_TRIGGER, aktifkan break-even (SL = entry)."""
-        if self.entry_price and current_price >= self.entry_price * (1 + BREAKEVEN_TRIGGER):
-            self.breakeven_active = True
+        if self.entry_price:
+            if self.side == "short":
+                if current_price <= self.entry_price * (1 - BREAKEVEN_TRIGGER):
+                    self.breakeven_active = True
+            else:
+                if current_price >= self.entry_price * (1 + BREAKEVEN_TRIGGER):
+                    self.breakeven_active = True
         return self.breakeven_active
 
     def check_time_stop(self):
