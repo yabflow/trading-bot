@@ -66,6 +66,7 @@ input{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background
 
 <div class="nav">
 <a href="#" class="active" onclick="showPage('dash',this)">📊 Dashboard</a>
+<a href="#" onclick="showPage('perf',this)">📈 Kinerja</a>
 <a href="#" onclick="showPage('settings',this)">⚙️ Pengaturan AI</a>
 </div>
 
@@ -127,6 +128,25 @@ input{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background
 </div>
 </div>
 
+<div id="page-perf" class="page">
+<div class="card">
+<h3>📈 Kinerja Bot</h3>
+<div class="sub" style="margin-bottom:10px">Statistik win rate, profit, dan kinerja trading. Filter per periode.</div>
+<div class="row" style="margin-bottom:12px">
+<select id="perfPeriod" onchange="loadPerformance()" style="flex:1;padding:10px;border-radius:8px;border:1px solid #333;background:#0f1115;color:#e6e6e6;font-size:0.9em">
+<option value="all">Semua Waktu</option>
+<option value="day">Hari Ini</option>
+<option value="7d">7 Hari Terakhir</option>
+<option value="month">Bulan Ini</option>
+<option value="year">Tahun Ini</option>
+</select>
+<button class="btn btn-export" onclick="exportPerformance()">⬇ Export Kinerja</button>
+</div>
+<div id="perfStats"></div>
+<div id="perfTable"></div>
+</div>
+</div>
+
 <div id="page-settings" class="page">
 <div class="card">
 <h3>⚙️ Konfigurasi AI</h3>
@@ -179,6 +199,7 @@ el.classList.add('active');
 document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
 document.getElementById('page-'+name).classList.add('active');
 if(name==='settings'){loadConfig();loadBotConfig();}
+if(name==='perf'){loadPerformance();}
 }
 function fmt(n){return n==null?"-":Number(n).toFixed(2)}
 async function fetchStatus(){
@@ -348,6 +369,44 @@ const s=await fetch('/status');const sd=await s.json();
 renderCandidates(sd);
 }catch(e){}
 }
+async function loadPerformance(){
+const period=document.getElementById('perfPeriod').value;
+try{
+const r=await fetch('/performance?period='+period);const d=await r.json();
+if(d.error){document.getElementById('perfStats').innerHTML='<span class="red">'+d.error+'</span>';return;}
+const s=d.stats||{};
+let h='<div class="row">';
+h+='<div class="col"><div class="statbox"><div class="label">Win Rate</div><div class="value '+(s.win_rate>=50?'green':'red')+'">'+s.win_rate+'%</div></div></div>';
+h+='<div class="col"><div class="statbox"><div class="label">Total SELL</div><div class="value">'+s.total_sells+'</div></div></div>';
+h+='<div class="col"><div class="statbox"><div class="label">Win / Loss</div><div class="value">'+s.wins+' / '+s.losses+'</div></div></div>';
+h+='<div class="col"><div class="statbox"><div class="label">Total P&L</div><div class="value '+(s.total_pnl_pct>=0?'green':'red')+'">'+(s.total_pnl_pct>=0?'+':'')+s.total_pnl_pct+'%</div></div></div>';
+h+='</div><div class="row" style="margin-top:10px">';
+h+='<div class="col"><div class="statbox"><div class="label">Profit Factor</div><div class="value">'+s.profit_factor+'</div></div></div>';
+h+='<div class="col"><div class="statbox"><div class="label">Avg Win</div><div class="value green">+'+s.avg_win_pct+'%</div></div></div>';
+h+='<div class="col"><div class="statbox"><div class="label">Avg Loss</div><div class="value red">-'+s.avg_loss_pct+'%</div></div></div>';
+h+='<div class="col"><div class="statbox"><div class="label">Best / Worst</div><div class="value"><span class="green">+'+s.best_trade+'</span> / <span class="red">'+s.worst_trade+'</span></div></div></div>';
+h+='</div>';
+document.getElementById('perfStats').innerHTML=h;
+const groups=d.groups||[];
+let th='';
+if(groups.length){
+th='<div class="card" style="margin-top:12px"><h3>Rincian per Periode</h3><table><thead><tr><th>Periode</th><th>Trade</th><th>P&L %</th><th>P&L USDT</th><th>Win Rate</th></tr></thead><tbody>';
+for(let i=0;i<groups.length;i++){const g=groups[i];
+th+='<tr><td>'+g.key+'</td><td>'+g.trades+'</td>'+
+'<td class="'+(g.pnl_pct>=0?'green':'red')+'">'+(g.pnl_pct>=0?'+':'')+g.pnl_pct+'%</td>'+
+'<td class="'+(g.pnl_usdt>=0?'green':'red')+'">'+(g.pnl_usdt>=0?'+':'')+g.pnl_usdt+'</td>'+
+'<td class="'+(g.win_rate>=50?'green':'red')+'">'+g.win_rate+'%</td></tr>';}
+th+='</tbody></table></div>';
+}
+document.getElementById('perfTable').innerHTML=th;
+}catch(e){document.getElementById('perfStats').innerHTML='<span class="red">Gagal: '+e+'</span>';}
+}
+async function exportPerformance(){
+const period=document.getElementById('perfPeriod').value;
+const r=await fetch('/performance/export?period='+period);
+const d=await r.json();
+alert(d.ok?'Kinerja tersimpan: '+d.file:'Gagal: '+d.error);
+}
 loadConfig();
 fetchStatus();setInterval(fetchStatus,3000);
 </script>
@@ -487,6 +546,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(market_analyzer.get_analysis())
             except Exception as e:
                 self._json({"error": str(e)})
+        elif path == "/performance":
+            period = qs.get("period", ["all"])[0]
+            try:
+                import performance
+                self._json({
+                    "stats": performance.compute(period),
+                    "groups": performance.group_by_period(period) if period != "all" else [],
+                })
+            except Exception as e:
+                self._json({"error": str(e)})
+        elif path == "/performance/export":
+            period = qs.get("period", ["all"])[0]
+            try:
+                import performance
+                f = performance.export_performance(period)
+                self._json({"ok": True, "file": f})
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)})
         elif path == "/download":
             date_str = qs.get("date", [""])[0]
             f = state.state.export_txt(date_str or None)
