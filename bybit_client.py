@@ -84,7 +84,7 @@ def get_wallet_balance():
 
 
 def get_positions():
-    return _signed_request("/v5/position/list", {"category": CATEGORY})
+    return _signed_request("/v5/position/list", {"category": CATEGORY, "settleCoin": "USDT"})
 
 
 def get_open_orders():

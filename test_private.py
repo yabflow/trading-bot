@@ -16,12 +16,22 @@ def main():
 
     try:
         balance = bc.get_wallet_balance()
-        if balance.get("retCode") == 0:
+        if balance >= 0:
             results.append(("Account access", "OK"))
+            print(f"Wallet balance: {balance} USDT")
         else:
-            results.append(("Account access", f"FAIL: retCode={balance.get('retCode')}"))
+            results.append(("Account access", "FAIL"))
     except Exception as e:
-        results.append(("Account access", "FAIL"))
+        results.append(("Account access", f"FAIL: {e}"))
+
+    try:
+        pos = bc.get_positions()
+        if pos.get("retCode") == 0:
+            results.append(("Position list (futures)", "OK"))
+        else:
+            results.append(("Position list (futures)", f"FAIL: retCode={pos.get('retCode')}"))
+    except Exception as e:
+        results.append(("Position list (futures)", f"FAIL: {e}"))
 
     results.append(("Trading orders", "NOT USED"))
 
