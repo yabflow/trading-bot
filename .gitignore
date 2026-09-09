@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+bot.pid
+daemon.pid
+*.log
+state.json
+bot_state.json
+trades.json
+candidate_memory.json
+history/
+riwayat_*.txt
