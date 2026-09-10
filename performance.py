@@ -52,8 +52,8 @@ def compute(period="all"):
     period: "all", "day", "7d", "month", "year"
     """
     trades = _load_all_trades()
-    sells = [t for t in trades if "SELL" in t.get("action", "")]
-    buys = [t for t in trades if "BUY" in t.get("action", "")]
+    sells = [t for t in trades if "CLOSE" in t.get("action", "")]
+    buys = [t for t in trades if "LONG" in t.get("action", "") or "SHORT" in t.get("action", "")]
 
     wins = [t for t in sells if float(t.get("pnl", 0)) > 0]
     losses = [t for t in sells if float(t.get("pnl", 0)) <= 0]
@@ -122,7 +122,7 @@ def group_by_period(period):
         g["pnl_pct"] += s.get("daily_pnl_pct", 0) * 100
         g["pnl_usdt"] += s.get("daily_pnl_usdt", 0)
         for t in s.get("trades", []):
-            if "SELL" in t.get("action", ""):
+            if "CLOSE" in t.get("action", ""):
                 g["total"] += 1
                 if float(t.get("pnl", 0)) > 0:
                     g["wins"] += 1

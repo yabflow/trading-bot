@@ -95,6 +95,9 @@ def _fetch_klines(symbol, interval, limit=30):
                 "low": float(k[3]), "close": float(k[4]),
                 "volume": float(k[5]),
             })
+        # buang candle terakhir (masih forming) — hanya pakai closed candles
+        if candles:
+            candles.pop()
         return candles
     except Exception:
         return []

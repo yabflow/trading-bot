@@ -47,12 +47,58 @@ Balas HANYA JSON (tanpa teks lain):
 {{"action":"long"|"short"|"hold","confidence":0-100,"entry":angka,"stop_loss":angka,"take_profit":angka,"setup_type":"breakout|momentum|pullback|trend_continuation|volume_spike|other","reason":"satu kalimat"}}"""
 
 
+_ACTION_MAP = {"buy": "long", "sell": "short", "long": "long", "short": "short"}
+
+
+def _normalize(res):
+    """Normalisasi & validasi hasil AI. Invalid/ambiguous → hold.
+
+    Tidak pernah fallback diam-diam ke long.
+    """
+    if not isinstance(res, dict):
+        return {"action": "hold", "confidence": 0, "reason": "AI response invalid"}
+    a = str(res.get("action", "hold")).lower().strip()
+    action = _ACTION_MAP.get(a, "hold")
+    try:
+        conf = int(res.get("confidence", 0))
+    except (ValueError, TypeError):
+        conf = 0
+    if not (0 <= conf <= 100):
+        conf = 0
+    try:
+        entry = float(res.get("entry", 0))
+        stop_loss = float(res.get("stop_loss", 0))
+        take_profit = float(res.get("take_profit", 0))
+    except (ValueError, TypeError):
+        entry = stop_loss = take_profit = 0.0
+
+    out = {
+        "action": action,
+        "confidence": conf,
+        "entry": entry,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "setup_type": res.get("setup_type", "other"),
+        "reason": res.get("reason", ""),
+    }
+    # arah tidak valid → hold (fail-safe)
+    if action == "long":
+        if entry <= 0 or not (stop_loss < entry < take_profit):
+            out["action"] = "hold"
+    elif action == "short":
+        if entry <= 0 or not (take_profit < entry < stop_loss):
+            out["action"] = "hold"
+    else:
+        out["confidence"] = 0
+    return out
+
+
 def analyze_candidate(candidate_data, position="none"):
-    res = analyze(candidate_data, position)
-    a = res.get("action", "hold")
-    if a == "buy":
-        res["action"] = "long"
-    return res
+    try:
+        res = analyze(candidate_data, position)
+    except Exception:
+        return {"action": "hold", "confidence": 0, "reason": "AI error"}
+    return _normalize(res)
 
 
 def analyze(market_data, position):
@@ -76,6 +122,14 @@ def analyze(market_data, position):
         resp = json.loads(r.read())
     content = resp["choices"][0]["message"]["content"]
     return _parse_json(content)
+
+
+def _safe_parse(text):
+    """Parse JSON dari AI. Gagal → kembalikan hold dict, tidak raise."""
+    try:
+        return _parse_json(text)
+    except Exception:
+        return {"action": "hold", "confidence": 0, "reason": "parse error"}
 
 
 def _parse_json(text):

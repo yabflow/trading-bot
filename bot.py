@@ -9,7 +9,7 @@ import candidate_memory
 import guard
 import position_manager as pm
 import scanner
-from risk_manager import RiskManager
+from risk_manager import RiskManager, LEVERAGE
 from state import state
 
 SHUTDOWN = False
@@ -92,6 +92,51 @@ def _save_daily(balance, rm):
     })
 
 
+def _est_liq_price(action, entry):
+    """Estimasi kasar harga likuidasi (isolated margin).
+    dist = 1/leverage + maintenance. Jika dist >= 1 (leverage ~1x), likuidasi praktis tidak ada."""
+    if entry <= 0:
+        return None
+    mcr = 0.005  # maintenance margin rate default Bybit linear
+    dist = (1.0 / LEVERAGE) + mcr
+    if dist >= 1.0:
+        return None  # leverage terlalu rendah untuk ada risiko likuidasi
+    if action == "long":
+        return entry * (1 - dist)
+    return entry * (1 + dist)
+
+
+def _verify_sl_tp(symbol, action):
+    """Verifikasi posisi + SL/TP exchange-side setelah entry.
+
+    Return (ok, msg). ok=False berarti posisi aktif tanpa protection → emergency close.
+    """
+    detail = pm.get_position_detail(symbol)
+    if detail is None:
+        return False, "posisi tidak ditemukan setelah entry (mungkin tidak terisi)"
+    if detail == "UNKNOWN":
+        return False, "tidak bisa verifikasi posisi (API error)"
+
+    # verify side
+    expected_side = "Buy" if action == "long" else "Sell"
+    if detail["side"] != expected_side:
+        return False, f"side tidak cocok (ekspektasi {expected_side}, aktual {detail['side']})"
+
+    # verify SL & TP ada dan arah benar
+    sl = detail.get("stop_loss")
+    tp = detail.get("take_profit")
+    if sl is None or tp is None:
+        return False, f"SL/TP belum terpasang (SL={sl}, TP={tp})"
+    if action == "long":
+        if not (sl < detail["entry"] < tp):
+            return False, f"SL/TP arah salah LONG (SL={sl} entry={detail['entry']} TP={tp})"
+    else:
+        if not (tp < detail["entry"] < sl):
+            return False, f"SL/TP arah salah SHORT (TP={tp} entry={detail['entry']} SL={sl})"
+
+    return True, "SL/TP terverifikasi"
+
+
 def _try_entry(rm, balance, symbol, price, signal_res):
     action = signal_res.get("action", "hold")
     if action not in ("long", "short"):
@@ -138,18 +183,48 @@ def _try_entry(rm, balance, symbol, price, signal_res):
             log(f"BOT: Rejected {symbol} — qty < minOrderQty.")
             return
 
+        # cek jarak likuidasi: likuidasi harus jauh di luar SL
+        liq = _est_liq_price(action, entry)
+        if liq is not None:
+            if action == "long" and liq >= stop_loss:
+                log(f"BOT: Rejected {symbol} — likuidasi {liq:.4f} terlalu dekat SL {stop_loss}.")
+                return
+            if action == "short" and liq <= stop_loss:
+                log(f"BOT: Rejected {symbol} — likuidasi {liq:.4f} terlalu dekat SL {stop_loss}.")
+                return
+
     risk_pct = rm.current_risk(confidence=confidence, strong_setup=strong_setup)
     side_str = "Buy" if action == "long" else "Sell"
     if DRY_RUN:
         log(f"[DRY-RUN] {action.upper()} {symbol} {qty:.6f} @ {entry} | SL={stop_loss} TP={take_profit} | risk={risk_pct*100:.2f}% conf={confidence}")
     else:
+        try:
+            bc.set_leverage(LEVERAGE, symbol=symbol)
+        except Exception as e:
+            log(f"Set leverage {symbol} warning: {e}")
+
         r = bc.create_order(side_str, qty, symbol=symbol,
                             stop_loss=stop_loss, take_profit=take_profit)
         if r.get("retCode") != 0:
             state.set_alert(f"GAGAL ENTRY {symbol}: retCode={r.get('retCode')} {r.get('retMsg')}")
             log(f"BOT: GAGAL ENTRY {symbol}: retCode={r.get('retCode')}")
             return
-        log(f"{action.upper()} {symbol} {qty:.6f} @ {entry} | SL={stop_loss} TP={take_profit} | risk={risk_pct*100:.2f}%")
+
+        # VERIFIKASI SL/TP exchange-side (requirement: jangan anggap sukses hanya dari retCode)
+        time.sleep(1)
+        ok, msg = _verify_sl_tp(symbol, action)
+        if not ok:
+            log(f"BOT: SL/TP verifikasi GAGAL {symbol}: {msg}. EMERGENCY CLOSE.")
+            state.set_alert(f"SL/TP verifikasi gagal {symbol}: {msg}. Emergency close.")
+            try:
+                detail = pm.get_position_detail(symbol)
+                if isinstance(detail, dict):
+                    bc.close_position(symbol, detail["side"], detail["qty"])
+            except Exception as e:
+                log(f"Emergency close error {symbol}: {e}")
+            return
+
+        log(f"{action.upper()} {symbol} {qty:.6f} @ {entry} | SL={stop_loss} TP={take_profit} | risk={risk_pct*100:.2f}% | SL/TP verified")
 
     rm.start_trailing(entry, side=action)
     state.add_trade({"t": time.strftime("%H:%M:%S"), "action": f"{action.upper()} {symbol}",
@@ -258,6 +333,12 @@ def _manage_position(rm, pos):
             if r.get("retCode") != 0:
                 state.set_alert(f"GAGAL TUTUP {sym}: retCode={r.get('retCode')}")
             log(f"{exit_reason} hit {sym} @ {price}. CLOSE position.")
+            # verifikasi posisi benar-benar tertutup
+            time.sleep(1)
+            detail = pm.get_position_detail(sym)
+            if isinstance(detail, dict):
+                log(f"BOT: posisi {sym} masih aktif ({detail['side']} qty={detail['qty']}) setelah close. Akan retry next loop.")
+                return  # jangan catat PnL/reset trailing sebelum benar tertutup
         pnl = (price - entry) / entry * 100 if entry else 0
         if direction == "short":
             pnl = -pnl
@@ -287,11 +368,26 @@ def run():
 
     if not DRY_RUN:
         try:
-            from risk_manager import LEVERAGE
+            bc.set_position_mode_one_way()
+            log("Position mode: one-way (maks 1 posisi per symbol).")
+        except Exception as e:
+            log(f"Set position mode warning: {e}")
+        try:
             bc.set_leverage(LEVERAGE)
             log(f"Leverage set: {LEVERAGE}x (isolated).")
         except Exception as e:
             log(f"Set leverage warning: {e}")
+
+        # startup reconciliation: kalau ada posisi tertinggal (restart), jangan buka posisi baru
+        try:
+            pos = pm.get_position()
+            if isinstance(pos, dict):
+                log(f"Startup reconciliation: posisi aktif {pos['symbol']} {pos['side']} qty={pos['qty']}. Ambil alih monitoring.")
+                rm.start_trailing(pos["entry"], side=("long" if pos["side"] == "Buy" else "short"))
+                state.update(position={"side": pos["side"], "qty": pos["qty"],
+                                       "entry": pos["entry"], "symbol": pos["symbol"]})
+        except Exception as e:
+            log(f"Startup reconciliation error: {e}")
 
     while not SHUTDOWN:
         if SELL_REQUEST:
@@ -340,7 +436,14 @@ def run():
 
             pos = get_position_info()
             state.update(position=pos)
-            has_pos = pos is not None
+            has_pos = isinstance(pos, dict)
+            pos_unknown = pos == "UNKNOWN"
+
+            if pos_unknown:
+                # status tidak diketahui → jangan entry, jangan kelola. Coba lagi next loop.
+                log("BOT: status posisi UNKNOWN (API error). Skip entry/monitor sampai jelas.")
+                sleep_check(10)
+                continue
 
             # === SCAN + entry hanya jika TIDAK ada posisi ===
             if not has_pos and time.time() - last_scan >= SCAN_INTERVAL:

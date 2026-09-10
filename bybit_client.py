@@ -87,6 +87,12 @@ def get_positions():
     return _signed_request("/v5/position/list", {"category": CATEGORY, "settleCoin": "USDT"})
 
 
+def get_position_info(symbol=None):
+    """Detail posisi satu symbol (termasuk stopLoss, takeProfit, liqPrice)."""
+    sym = symbol or SYMBOL
+    return _signed_request("/v5/position/list", {"category": CATEGORY, "settleCoin": "USDT", "symbol": sym})
+
+
 def get_open_orders():
     return _signed_request("/v5/order/realtime", {"category": CATEGORY, "symbol": SYMBOL})
 
@@ -101,6 +107,12 @@ def set_leverage(leverage, symbol=None):
     sym = symbol or SYMBOL
     body = {"category": CATEGORY, "symbol": sym, "buyLeverage": str(leverage), "sellLeverage": str(leverage)}
     return _signed_request("/v5/position/set-leverage", body=body)
+
+
+def set_position_mode_one_way():
+    """Pastikan one-way mode (posisiIdx 0) agar maks 1 posisi per symbol."""
+    body = {"category": CATEGORY, "symbol": SYMBOL, "mode": 0}
+    return _signed_request("/v5/position/switch-mode", body=body)
 
 
 def create_order(side, qty, symbol=None, order_type="Market", stop_loss=None, take_profit=None, reduce_only=False):
