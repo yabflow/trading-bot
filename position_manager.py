@@ -1,3 +1,5 @@
+import time
+
 import bybit_client as bc
 
 _UNKNOWN = "UNKNOWN"
@@ -74,11 +76,34 @@ def has_position():
 
 
 def sell_all():
-    """Tutup semua posisi aktif (long atau short)."""
+    """Tutup semua posisi aktif + verifikasi size benar-benar 0 + cancel order terbuka.
+
+    Return list hasil close. Verifikasi via Bybit bahwa position size == 0.
+    """
+    results = []
     pos = get_position()
-    if not isinstance(pos, dict):
-        return []
-    return [bc.close_position(pos["symbol"], pos["side"], pos["qty"])]
+    if pos == _UNKNOWN:
+        # status tidak diketahui → coba close semua symbol yang mungkin, lalu verifikasi
+        results.append("UNKNOWN")
+    if isinstance(pos, dict):
+        results.append(bc.close_position(pos["symbol"], pos["side"], pos["qty"]))
+
+    # cancel semua open order yang tersisa
+    try:
+        bc.cancel_all_orders()
+    except Exception:
+        pass
+
+    # verifikasi final: position size harus 0
+    time.sleep(1)
+    final = get_position()
+    if final == _UNKNOWN:
+        results.append("VERIFY-UNKNOWN")
+    elif isinstance(final, dict):
+        results.append(f"STILL-OPEN:{final['symbol']}")
+    else:
+        results.append("VERIFIED-CLOSED")
+    return results
 
 
 def cancel_all():

@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import signal
@@ -13,6 +14,9 @@ PORT = int(os.getenv("WEB_PORT", "8080"))
 BASE_DIR = os.path.dirname(__file__)
 BOT_PID = None
 BOT_LOG_TAIL = []
+
+DASH_USER = os.getenv("DASH_USER", "Yab")
+DASH_PASS = os.getenv("DASH_PASS", "Samudra28")
 
 INDEX_HTML = """<!DOCTYPE html>
 <html lang="id">
@@ -474,6 +478,27 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _auth_ok(self):
+        h = self.headers.get("Authorization", "")
+        if not h.startswith("Basic "):
+            return False
+        try:
+            userpass = base64.b64decode(h[6:]).decode()
+            user, pw = userpass.split(":", 1)
+            return user == DASH_USER and pw == DASH_PASS
+        except Exception:
+            return False
+
+    def _require_auth(self):
+        if self._auth_ok():
+            return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="Trading Bot"')
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Login required")
+        return False
+
     def _json(self, data):
         body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(200)
@@ -490,6 +515,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if not self._require_auth():
+            return
         path = urllib.parse.urlparse(self.path).path
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         if path == "/":
@@ -587,6 +614,8 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
+        if not self._require_auth():
+            return
         path = urllib.parse.urlparse(self.path).path
         if path == "/config":
             length = int(self.headers.get("Content-Length", 0))

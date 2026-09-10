@@ -151,6 +151,8 @@ def _indicators(candles):
     recent = candles[-10:]
     avg_range = sum((c["high"] - c["low"]) / c["close"] for c in recent) / len(recent) * 100
 
+    atr = _atr(candles)
+
     return {
         "price": price,
         "rsi": round(rsi, 1) if rsi is not None else None,
@@ -160,8 +162,26 @@ def _indicators(candles):
         "vol_spike": round(vol_spike, 2),
         "breakout": bool(breakout),
         "avg_range_pct": round(avg_range, 2),
+        "atr": round(atr, 6) if atr is not None else None,
+        "atr_pct": round((atr / price * 100), 2) if atr is not None and price else None,
         "trend": "bullish" if ema9 and ema21 and ema9 > ema21 else ("bearish" if ema9 and ema21 else "netral"),
     }
+
+
+def _atr(candles, period=14):
+    """Average True Range — volatilitas absolut untuk konteks SL/TP."""
+    if len(candles) < period + 1:
+        return None
+    trs = []
+    for i in range(1, len(candles)):
+        h = candles[i]["high"]
+        l = candles[i]["low"]
+        pc = candles[i - 1]["close"]
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        trs.append(tr)
+    if not trs:
+        return None
+    return sum(trs[-period:]) / period
 
 
 def _score(c, ind):
@@ -282,20 +302,32 @@ def scan():
 
 
 def enrich_multi_timeframe(symbol):
-    """Ambil klines multi-timeframe untuk candidate (untuk AI)."""
+    """Ambil klines multi-timeframe untuk candidate (untuk AI).
+
+    Berikan raw OHLCV (closed candles) + indicator relevan (RSI, trend, ATR).
+    Candle terakhir (masih forming) sudah dibuang di _fetch_klines.
+    """
     data = {"symbol": symbol}
     tf_map = {"5": "5m", "15": "15m", "60": "1h", "240": "4h"}
     for tf, name in tf_map.items():
         candles = _fetch_klines(symbol, tf, limit=30)
         if candles:
+            last20 = candles[-20:]
+            ind = _indicators(candles)
             data[name] = {
-                "closes": [c["close"] for c in candles[-20:]],
-                "highs": [c["high"] for c in candles[-20:]],
-                "lows": [c["low"] for c in candles[-20:]],
-                "volumes": [c["volume"] for c in candles[-20:]],
-                "trend": _indicators(candles).get("trend"),
-                "rsi": _indicators(candles).get("rsi"),
-                "vol_spike": _indicators(candles).get("vol_spike"),
+                # raw OHLCV (closed candles only)
+                "opens": [c["open"] for c in last20],
+                "closes": [c["close"] for c in last20],
+                "highs": [c["high"] for c in last20],
+                "lows": [c["low"] for c in last20],
+                "volumes": [c["volume"] for c in last20],
+                "trend": ind.get("trend"),
+                "rsi": ind.get("rsi"),
+                "vol_spike": ind.get("vol_spike"),
+                "atr": ind.get("atr"),
+                "atr_pct": ind.get("atr_pct"),
+                "ema9": ind.get("ema9"),
+                "ema21": ind.get("ema21"),
             }
     return data
 
@@ -347,13 +379,35 @@ def get_btc_context():
         return {}
 
 
+def _relative_strength(symbol):
+    """Relative strength: performa coin vs BTC selama ~24 jam (1h candles).
+    Positif = lebih kuat dari BTC, negatif = lebih lemah."""
+    try:
+        c_candles = _fetch_klines(symbol, "60", limit=30)
+        b_candles = _fetch_klines("BTCUSDT", "60", limit=30)
+        if len(c_candles) < 2 or len(b_candles) < 2:
+            return None
+        c0, c1 = c_candles[0]["close"], c_candles[-1]["close"]
+        b0, b1 = b_candles[0]["close"], b_candles[-1]["close"]
+        if c0 <= 0 or b0 <= 0:
+            return None
+        coin_chg = (c1 - c0) / c0 * 100
+        btc_chg = (b1 - b0) / b0 * 100
+        return {"coin_change_pct": round(coin_chg, 2),
+                "btc_change_pct": round(btc_chg, 2),
+                "relative_strength": round(coin_chg - btc_chg, 2)}
+    except Exception:
+        return None
+
+
 def enrich_full(symbol, base_candidate):
-    """Data lengkap untuk AI: multi-timeframe + S/R + volume profil + konteks BTC."""
+    """Data lengkap untuk AI: multi-timeframe + S/R + volume profil + konteks BTC + relative strength."""
     data = enrich_multi_timeframe(symbol)
     candles_15 = _fetch_klines(symbol, "15", limit=30)
     data["support_resistance"] = _support_resistance(candles_15)
     data["volume_profile"] = _volume_profile(candles_15)
     data["btc_context"] = get_btc_context()
+    data["relative_strength"] = _relative_strength(symbol)
     data["candidate"] = {
         "symbol": symbol,
         "price": base_candidate.get("price"),

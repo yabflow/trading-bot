@@ -1,7 +1,9 @@
 import os
 import signal
+import subprocess
 import sys
 import time
+import threading
 
 import bybit_client as bc
 import ai_analyzer as ai
@@ -15,6 +17,131 @@ from state import state
 SHUTDOWN = False
 SELL_REQUEST = False
 DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
+INHIBITOR = None
+INHIBIT_LOCK = threading.Lock()
+INHIBIT_MONITOR = None
+
+
+def _hold_suspend():
+    """Jaga laptop tetap terjaga selama bot jalan.
+
+    Coba berurutan (pertama yang berhasil dipakai):
+    1. systemd-inhibit  (blocking, lock aktif selama proses hidup)
+    2. DBus login1.Inhibit fd (fallback tanpa binary systemd-inhibit)
+
+    Monitor thread di belakang memastikan lock tidak lepas diam-diam.
+    """
+    global INHIBITOR, INHIBIT_MONITOR
+
+    def _arm():
+        global INHIBITOR
+        # Primary: systemd-inhibit
+        try:
+            INHIBITOR = subprocess.Popen(
+                ["systemd-inhibit", "--what=sleep:idle:handle-lid-switch",
+                 "--who=Trading-BOT", "--why=Bot aktif, jangan suspend", "sleep", "infinity"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            INHIBITOR = None
+
+        # Fallback: DBus login1.Inhibit (fd tetap terbuka = lock aktif)
+        try:
+            import dbus
+            bus = dbus.SystemBus()
+            proxy = bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1")
+            iface = dbus.Interface(proxy, "org.freedesktop.login1.Manager")
+            fd = iface.Inhibit("sleep", "Trading-BOT", "Bot aktif, jangan suspend", "delay")
+            INHIBITOR = {"type": "dbus", "fd": fd}
+            return True
+        except Exception:
+            INHIBITOR = None
+
+        return False
+
+    with INHIBIT_LOCK:
+        _release_suspend_internal()
+        if _arm():
+            log("Suspend inhibition aktif")
+        else:
+            log("WARNING: inhibit suspend GAGAL (systemd-inhibit & DBus tidak tersedia)")
+
+    if INHIBITOR is not None and INHIBIT_MONITOR is None:
+        INHIBIT_MONITOR = threading.Thread(target=_monitor_inhibit, daemon=True)
+        INHIBIT_MONITOR.start()
+
+
+def _monitor_inhibit():
+    """Re-arm inhibitor jika mati/lepas sebelum bot selesai."""
+    global INHIBITOR
+    while not SHUTDOWN:
+        time.sleep(15)
+        with INHIBIT_LOCK:
+            if INHIBITOR is None:
+                continue
+            dead = False
+            if isinstance(INHIBITOR, dict):
+                if INHIBITOR["type"] == "dbus":
+                    try:
+                        os.fstat(INHIBITOR["fd"])
+                    except OSError:
+                        dead = True
+            else:
+                dead = INHIBITOR.poll() is not None
+            if dead:
+                log("Inhibit lepas, re-arm...")
+                _release_suspend_internal()
+                _arm_silent()
+                if INHIBITOR is None:
+                    break
+
+
+def _arm_silent():
+    global INHIBITOR
+    try:
+        INHIBITOR = subprocess.Popen(
+            ["systemd-inhibit", "--what=sleep:idle:handle-lid-switch",
+             "--who=Trading-BOT", "--why=Bot aktif, jangan suspend", "sleep", "infinity"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    except Exception:
+        INHIBITOR = None
+    try:
+        import dbus
+        bus = dbus.SystemBus()
+        proxy = bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1")
+        iface = dbus.Interface(proxy, "org.freedesktop.login1.Manager")
+        fd = iface.Inhibit("sleep", "Trading-BOT", "Bot aktif, jangan suspend", "delay")
+        INHIBITOR = {"type": "dbus", "fd": fd}
+    except Exception:
+        INHIBITOR = None
+
+
+def _release_suspend():
+    global INHIBITOR, INHIBIT_MONITOR
+    with INHIBIT_LOCK:
+        _release_suspend_internal()
+    INHIBIT_MONITOR = None
+
+
+def _release_suspend_internal():
+    global INHIBITOR
+    if INHIBITOR is None:
+        return
+    try:
+        if isinstance(INHIBITOR, dict):
+            if INHIBITOR["type"] == "dbus":
+                os.close(INHIBITOR["fd"])
+        else:
+            INHIBITOR.terminate()
+            try:
+                INHIBITOR.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                INHIBITOR.kill()
+    except Exception:
+        pass
+    INHIBITOR = None
+    log("Suspend inhibition dilepas")
 
 CRASH_PCT = float(os.getenv("CRASH_PCT", "0.03"))
 MAX_CONSECUTIVE_ERRORS = int(os.getenv("MAX_ERRORS", "10"))
@@ -69,6 +196,11 @@ def sell_all(rm):
         try:
             r = pm.sell_all()
             log(f"Close all result: {r}")
+            # #11: jika masih ada posisi setelah close, jangan anggap berhasil diam-diam.
+            if any(str(x).startswith("STILL-OPEN") for x in r):
+                state.set_alert(f"POSISI MASIH TERBUKA setelah sell_all: {r}. Retry diperlukan.")
+                log("BOT: sell_all belum tuntas, posisi masih terbuka. Retry next loop.")
+                return
         except Exception as e:
             log(f"Close all error: {e}")
             state.set_alert(f"GAGAL TUTUP POSISI: {e}")
@@ -137,6 +269,57 @@ def _verify_sl_tp(symbol, action):
     return True, "SL/TP terverifikasi"
 
 
+def _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss, take_profit):
+    """Setelah create_order timeout/error, cek state Bybit: apakah posisi terbentuk?
+
+    Timeout bukan berarti order gagal. Jika posisi terbentuk:
+      - dengan SL/TP valid → ambil alih (adopt) tanpa entry ulang.
+      - tanpa SL/TP → pasang protection, jika gagal → emergency close.
+    Jika tidak ada posisi → aman, tidak ada aksi.
+    """
+    time.sleep(1)
+    detail = pm.get_position_detail(symbol)
+    if detail == "UNKNOWN":
+        state.set_alert(f"create_order timeout {symbol} + status posisi UNKNOWN. Perlu cek manual!")
+        log(f"BOT: timeout {symbol} + status UNKNOWN. Manual review diperlukan.")
+        return
+    if not isinstance(detail, dict):
+        log(f"BOT: timeout {symbol}, tidak ada posisi terbentuk. Aman.")
+        return
+
+    expected_side = "Buy" if action == "long" else "Sell"
+    log(f"BOT: timeout {symbol} tapi posisi terbentuk ({detail['side']} qty={detail['qty']}). Adopt.")
+    if detail["side"] != expected_side:
+        log(f"BOT: side tidak cocok ({detail['side']} vs {expected_side}). Emergency close.")
+        try:
+            bc.close_position(symbol, detail["side"], detail["qty"])
+        except Exception as e:
+            log(f"Emergency close error {symbol}: {e}")
+        return
+
+    # cek SL/TP terpasang benar
+    ok, msg = _verify_sl_tp(symbol, action)
+    if ok:
+        log(f"BOT: posisi {symbol} adopt dengan SL/TP verified.")
+        return
+    # coba pasang ulang SL/TP
+    log(f"BOT: {symbol} tanpa protection ({msg}). Pasang SL/TP ulang.")
+    try:
+        bc.set_trading_stop(symbol, detail["side"], stop_loss=stop_loss, take_profit=take_profit)
+        time.sleep(1)
+        ok2, msg2 = _verify_sl_tp(symbol, action)
+        if ok2:
+            log(f"BOT: {symbol} SL/TP berhasil dipasang ulang.")
+            return
+        log(f"BOT: {symbol} SL/TP gagal dipasang ulang ({msg2}). Emergency close.")
+    except Exception as e:
+        log(f"BOT: set SL/TP ulang error {symbol}: {e}. Emergency close.")
+    try:
+        bc.close_position(symbol, detail["side"], detail["qty"])
+    except Exception as e:
+        log(f"Emergency close error {symbol}: {e}")
+
+
 def _try_entry(rm, balance, symbol, price, signal_res):
     action = signal_res.get("action", "hold")
     if action not in ("long", "short"):
@@ -198,16 +381,44 @@ def _try_entry(rm, balance, symbol, price, signal_res):
     if DRY_RUN:
         log(f"[DRY-RUN] {action.upper()} {symbol} {qty:.6f} @ {entry} | SL={stop_loss} TP={take_profit} | risk={risk_pct*100:.2f}% conf={confidence}")
     else:
+        # #7 DUPLICATE-ORDER + #10 ONE-POSITION: cek posisi exchange SESUAT sebelum kirim order.
+        # Jangan buka posisi kedua karena local state stale / signal berulang / race.
+        cur = pm.get_position()
+        if isinstance(cur, dict):
+            log(f"BOT: Rejected {symbol} — sudah ada posisi aktif {cur['symbol']} {cur['side']}. Skip entry (one-position rule).")
+            return
+        if cur == "UNKNOWN":
+            log(f"BOT: Rejected {symbol} — status posisi UNKNOWN (API error). Tidak entry untuk cegah duplicate.")
+            state.set_alert(f"Entry dibatalkan {symbol}: status posisi UNKNOWN.")
+            return
+
         try:
             bc.set_leverage(LEVERAGE, symbol=symbol)
         except Exception as e:
             log(f"Set leverage {symbol} warning: {e}")
 
-        r = bc.create_order(side_str, qty, symbol=symbol,
-                            stop_loss=stop_loss, take_profit=take_profit)
+        # #7: kirim order dengan timeout proteksi. Timeout BUKAN berarti order gagal —
+        # bisa jadi sudah terisi. Verifikasi state Bybit sebelum lanjut.
+        try:
+            r = bc.create_order(side_str, qty, symbol=symbol,
+                                stop_loss=stop_loss, take_profit=take_profit)
+        except Exception as e:
+            log(f"BOT: create_order timeout/error {symbol}: {e}. Cek state Bybit...")
+            _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss, take_profit)
+            return
+
         if r.get("retCode") != 0:
             state.set_alert(f"GAGAL ENTRY {symbol}: retCode={r.get('retCode')} {r.get('retMsg')}")
             log(f"BOT: GAGAL ENTRY {symbol}: retCode={r.get('retCode')}")
+            # order ditolak — pastikan tidak ada posisi terlanjur terbuka
+            time.sleep(1)
+            cur = pm.get_position()
+            if isinstance(cur, dict) and cur["symbol"] == symbol:
+                log(f"BOT: entry ditolak tapi posisi {symbol} terbuka. Emergency close.")
+                try:
+                    bc.close_position(symbol, cur["side"], cur["qty"])
+                except Exception as e2:
+                    log(f"Emergency close error {symbol}: {e2}")
             return
 
         # VERIFIKASI SL/TP exchange-side (requirement: jangan anggap sukses hanya dari retCode)
@@ -366,6 +577,8 @@ def run():
     state.clear_alert()
     log(f"Bot start [{mode}] FUTURES. Balance: {balance} USDT. Risk: {rm.current_risk()*100:.2f}%")
 
+    _hold_suspend()
+
     if not DRY_RUN:
         try:
             bc.set_position_mode_one_way()
@@ -382,10 +595,29 @@ def run():
         try:
             pos = pm.get_position()
             if isinstance(pos, dict):
-                log(f"Startup reconciliation: posisi aktif {pos['symbol']} {pos['side']} qty={pos['qty']}. Ambil alih monitoring.")
-                rm.start_trailing(pos["entry"], side=("long" if pos["side"] == "Buy" else "short"))
+                sym = pos["symbol"]
+                direction = "long" if pos["side"] == "Buy" else "short"
+                log(f"Startup reconciliation: posisi aktif {sym} {pos['side']} qty={pos['qty']}. Ambil alih monitoring.")
+                # #12: verifikasi protection (SL/TP) ada di exchange sebelum lanjut trading.
+                ok, msg = _verify_sl_tp(sym, direction)
+                if not ok:
+                    log(f"Startup: posisi {sym} TANPA protection terverifikasi ({msg}).")
+                    if pos.get("stop_loss") is None or pos.get("take_profit") is None:
+                        # tidak ada SL/TP sama sekali → pasang ulang dari entry, gagal → close
+                        try:
+                            sl = pos["entry"] * (1 - 0.005) if direction == "long" else pos["entry"] * (1 + 0.005)
+                            tp = pos["entry"] * (1 + 0.01) if direction == "long" else pos["entry"] * (1 - 0.01)
+                            bc.set_trading_stop(sym, pos["side"], stop_loss=sl, take_profit=tp)
+                            log(f"Startup: SL/TP {sym} dipasang ulang (SL={sl} TP={tp}).")
+                        except Exception as e:
+                            log(f"Startup: gagal pasang SL/TP {sym}: {e}. Emergency close.")
+                            try:
+                                bc.close_position(sym, pos["side"], pos["qty"])
+                            except Exception as e2:
+                                log(f"Emergency close error {sym}: {e2}")
+                rm.start_trailing(pos["entry"], side=direction)
                 state.update(position={"side": pos["side"], "qty": pos["qty"],
-                                       "entry": pos["entry"], "symbol": pos["symbol"]})
+                                       "entry": pos["entry"], "symbol": sym})
         except Exception as e:
             log(f"Startup reconciliation error: {e}")
 
@@ -496,6 +728,7 @@ def run():
 
 
 def _cleanup(rm):
+    _release_suspend()
     state.update(running=False)
     log("Cleanup: cancel semua order...")
     if not DRY_RUN:
