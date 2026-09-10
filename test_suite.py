@@ -130,6 +130,119 @@ def test_performance_short_not_counted_as_sell():
     assert performance._load_all_trades.__name__  # import check only
 
 
+# --- Safety: failure/retry/unknown-state scenarios ---
+
+def _pos(side="Buy", qty=0.1, entry=100, sl=98, tp=105):
+    return {"symbol": "BTCUSDT", "side": side, "qty": qty, "entry": entry,
+            "leverage": "1", "unrealisedPnl": 0.0, "stop_loss": sl, "take_profit": tp,
+            "liq_price": None}
+
+
+def test_verify_sl_tp_ok_long():
+    import bot
+    orig = position_manager.get_position_detail
+    position_manager.get_position_detail = lambda s: _pos(side="Buy", entry=100, sl=98, tp=105)
+    try:
+        ok, msg = bot._verify_sl_tp("BTCUSDT", "long", expected_qty=0.1)
+        assert ok, msg
+    finally:
+        position_manager.get_position_detail = orig
+
+
+def test_verify_sl_tp_missing_sl():
+    import bot
+    orig = position_manager.get_position_detail
+    position_manager.get_position_detail = lambda s: _pos(side="Buy", entry=100, sl=None, tp=105)
+    try:
+        ok, msg = bot._verify_sl_tp("BTCUSDT", "long")
+        assert not ok
+        assert "SL/TP" in msg
+    finally:
+        position_manager.get_position_detail = orig
+
+
+def test_verify_sl_tp_wrong_side():
+    import bot
+    orig = position_manager.get_position_detail
+    position_manager.get_position_detail = lambda s: _pos(side="Sell", entry=100, sl=102, tp=95)
+    try:
+        ok, msg = bot._verify_sl_tp("BTCUSDT", "long")
+        assert not ok
+        assert "side" in msg
+    finally:
+        position_manager.get_position_detail = orig
+
+
+def test_verify_sl_tp_qty_mismatch():
+    import bot
+    orig = position_manager.get_position_detail
+    position_manager.get_position_detail = lambda s: _pos(side="Buy", qty=0.01, entry=100, sl=98, tp=105)
+    try:
+        ok, msg = bot._verify_sl_tp("BTCUSDT", "long", expected_qty=0.1)
+        assert not ok
+        assert "qty" in msg
+    finally:
+        position_manager.get_position_detail = orig
+
+
+def test_verify_sl_tp_unknown():
+    import bot
+    orig = position_manager.get_position_detail
+    position_manager.get_position_detail = lambda s: "UNKNOWN"
+    try:
+        ok, msg = bot._verify_sl_tp("BTCUSDT", "long")
+        assert not ok
+        assert "API" in msg
+    finally:
+        position_manager.get_position_detail = orig
+
+
+def test_verify_sl_tp_no_position():
+    import bot
+    orig = position_manager.get_position_detail
+    position_manager.get_position_detail = lambda s: None
+    try:
+        ok, msg = bot._verify_sl_tp("BTCUSDT", "long")
+        assert not ok
+        assert "tidak ditemukan" in msg
+    finally:
+        position_manager.get_position_detail = orig
+
+
+def test_emergency_close_verifies_zero():
+    import bot
+    calls = {"closed": False}
+    orig_detail = position_manager.get_position_detail
+    orig_close = bot.bc.close_position
+    bot.bc.close_position = lambda s, side, qty: calls.update(closed=True) or {"retCode": 0}
+    seq = [_pos(side="Buy"), None]  # first call: still open, after close: gone
+    position_manager.get_position_detail = lambda s: seq.pop(0)
+    try:
+        bot._emergency_close("BTCUSDT")
+        assert calls["closed"]
+        assert bot.state.data.get("alert") is None
+    finally:
+        position_manager.get_position_detail = orig_detail
+        bot.bc.close_position = orig_close
+
+
+def test_emergency_close_still_open_alert():
+    import bot
+    orig_detail = position_manager.get_position_detail
+    orig_close = bot.bc.close_position
+    bot.bc.close_position = lambda s, side, qty: {"retCode": 0}
+    # after close, still open
+    position_manager.get_position_detail = lambda s: _pos(side="Buy")
+    bot.state.clear_alert()
+    try:
+        bot._emergency_close("BTCUSDT")
+        assert "EMERGENCY CLOSE GAGAL" in (bot.state.data.get("alert") or "")
+    finally:
+        position_manager.get_position_detail = orig_detail
+        bot.bc.close_position = orig_close
+        bot.state.clear_alert()
+
+
 if __name__ == "__main__":
     import traceback
     failures = []

@@ -103,6 +103,19 @@ def sell_all():
         results.append(f"STILL-OPEN:{final['symbol']}")
     else:
         results.append("VERIFIED-CLOSED")
+
+    # verifikasi tidak ada orphan order tersisa
+    try:
+        orders = bc.get_open_orders()
+        if orders.get("retCode") == 0:
+            remaining = [o for o in orders.get("result", {}).get("list", [])
+                         if o.get("orderStatus") in ("New", "PartiallyFilled")]
+            if remaining:
+                results.append(f"ORPHAN-ORDERS:{len(remaining)}")
+            else:
+                results.append("ORDERS-CLEAN")
+    except Exception:
+        results.append("ORDER-CHECK-FAILED")
     return results
 
 

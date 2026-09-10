@@ -238,10 +238,11 @@ def _est_liq_price(action, entry):
     return entry * (1 + dist)
 
 
-def _verify_sl_tp(symbol, action):
-    """Verifikasi posisi + SL/TP exchange-side setelah entry.
+def _verify_sl_tp(symbol, action, expected_qty=None):
+    """Verifikasi posisi + side + size + SL/TP exchange-side setelah entry.
 
     Return (ok, msg). ok=False berarti posisi aktif tanpa protection → emergency close.
+    expected_qty: jika diberikan, qty posisi harus >= expected_qty (toleransi 5%).
     """
     detail = pm.get_position_detail(symbol)
     if detail is None:
@@ -253,6 +254,11 @@ def _verify_sl_tp(symbol, action):
     expected_side = "Buy" if action == "long" else "Sell"
     if detail["side"] != expected_side:
         return False, f"side tidak cocok (ekspektasi {expected_side}, aktual {detail['side']})"
+
+    # verify size/qty cocok dengan order yang dikirim
+    if expected_qty is not None and expected_qty > 0:
+        if detail["qty"] < expected_qty * 0.95:
+            return False, f"qty posisi {detail['qty']} < ekspektasi {expected_qty} (partial fill?)"
 
     # verify SL & TP ada dan arah benar
     sl = detail.get("stop_loss")
@@ -267,6 +273,27 @@ def _verify_sl_tp(symbol, action):
             return False, f"SL/TP arah salah SHORT (TP={tp} entry={detail['entry']} SL={sl})"
 
     return True, "SL/TP terverifikasi"
+
+
+def _emergency_close(symbol):
+    """Tutup posisi darurat + verifikasi posisi benar-benar 0."""
+    try:
+        detail = pm.get_position_detail(symbol)
+        if isinstance(detail, dict):
+            bc.close_position(symbol, detail["side"], detail["qty"])
+    except Exception as e:
+        log(f"Emergency close error {symbol}: {e}")
+    # verifikasi posisi = 0 setelah close
+    time.sleep(1)
+    after = pm.get_position_detail(symbol)
+    if isinstance(after, dict):
+        state.set_alert(f"EMERGENCY CLOSE GAGAL {symbol}: posisi masih {after['side']} qty={after['qty']}")
+        log(f"BOT: EMERGENCY CLOSE GAGAL {symbol}, posisi masih terbuka.")
+    elif after == "UNKNOWN":
+        state.set_alert(f"EMERGENCY CLOSE {symbol}: status posisi UNKNOWN setelah close.")
+        log(f"BOT: EMERGENCY CLOSE {symbol}, status UNKNOWN setelah close.")
+    else:
+        log(f"BOT: EMERGENCY CLOSE {symbol} sukses, posisi=0.")
 
 
 def _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss, take_profit):
@@ -291,10 +318,7 @@ def _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss, take_p
     log(f"BOT: timeout {symbol} tapi posisi terbentuk ({detail['side']} qty={detail['qty']}). Adopt.")
     if detail["side"] != expected_side:
         log(f"BOT: side tidak cocok ({detail['side']} vs {expected_side}). Emergency close.")
-        try:
-            bc.close_position(symbol, detail["side"], detail["qty"])
-        except Exception as e:
-            log(f"Emergency close error {symbol}: {e}")
+        _emergency_close(symbol)
         return
 
     # cek SL/TP terpasang benar
@@ -314,10 +338,7 @@ def _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss, take_p
         log(f"BOT: {symbol} SL/TP gagal dipasang ulang ({msg2}). Emergency close.")
     except Exception as e:
         log(f"BOT: set SL/TP ulang error {symbol}: {e}. Emergency close.")
-    try:
-        bc.close_position(symbol, detail["side"], detail["qty"])
-    except Exception as e:
-        log(f"Emergency close error {symbol}: {e}")
+    _emergency_close(symbol)
 
 
 def _try_entry(rm, balance, symbol, price, signal_res):
@@ -415,24 +436,16 @@ def _try_entry(rm, balance, symbol, price, signal_res):
             cur = pm.get_position()
             if isinstance(cur, dict) and cur["symbol"] == symbol:
                 log(f"BOT: entry ditolak tapi posisi {symbol} terbuka. Emergency close.")
-                try:
-                    bc.close_position(symbol, cur["side"], cur["qty"])
-                except Exception as e2:
-                    log(f"Emergency close error {symbol}: {e2}")
+                _emergency_close(symbol)
             return
 
         # VERIFIKASI SL/TP exchange-side (requirement: jangan anggap sukses hanya dari retCode)
         time.sleep(1)
-        ok, msg = _verify_sl_tp(symbol, action)
+        ok, msg = _verify_sl_tp(symbol, action, expected_qty=qty)
         if not ok:
             log(f"BOT: SL/TP verifikasi GAGAL {symbol}: {msg}. EMERGENCY CLOSE.")
             state.set_alert(f"SL/TP verifikasi gagal {symbol}: {msg}. Emergency close.")
-            try:
-                detail = pm.get_position_detail(symbol)
-                if isinstance(detail, dict):
-                    bc.close_position(symbol, detail["side"], detail["qty"])
-            except Exception as e:
-                log(f"Emergency close error {symbol}: {e}")
+            _emergency_close(symbol)
             return
 
         log(f"{action.upper()} {symbol} {qty:.6f} @ {entry} | SL={stop_loss} TP={take_profit} | risk={risk_pct*100:.2f}% | SL/TP verified")
@@ -480,6 +493,17 @@ def _analyze_candidates(top_candidates):
     return None, None, None
 
 
+def _verify_protection(symbol, direction, label):
+    """Setelah update SL (trailing/BE), verify SL/TP masih terpasang di exchange.
+    Jika protection hilang → emergency close."""
+    time.sleep(1)
+    ok, msg = _verify_sl_tp(symbol, direction)
+    if not ok:
+        log(f"BOT: {label} SL update {symbol} menyebabkan protection hilang ({msg}). Emergency close.")
+        state.set_alert(f"{label} SL update {symbol} gagal verify: {msg}. Emergency close.")
+        _emergency_close(symbol)
+
+
 def _manage_position(rm, pos):
     """Kelola posisi aktif: trailing + break-even via move SL (exchange-side)."""
     sym = pos.get("symbol", "BTCUSDT")
@@ -516,6 +540,7 @@ def _manage_position(rm, pos):
         if not DRY_RUN:
             try:
                 bc.set_trading_stop(sym, side, stop_loss=sl_price)
+                _verify_protection(sym, direction, "break-even")
             except Exception as e:
                 log(f"Set break-even SL error: {e}")
     else:
@@ -530,9 +555,11 @@ def _manage_position(rm, pos):
             if direction == "long" and trail_sl > entry:
                 if not DRY_RUN:
                     bc.set_trading_stop(sym, side, stop_loss=trail_sl)
+                    _verify_protection(sym, direction, "trailing")
             elif direction == "short" and trail_sl < entry:
                 if not DRY_RUN:
                     bc.set_trading_stop(sym, side, stop_loss=trail_sl)
+                    _verify_protection(sym, direction, "trailing")
         except Exception as e:
             log(f"Set trailing SL error: {e}")
 
@@ -593,6 +620,18 @@ def run():
 
         # startup reconciliation: kalau ada posisi tertinggal (restart), jangan buka posisi baru
         try:
+            # #4: cancel orphan orders dari run sebelumnya agar tidak konflik
+            try:
+                orders = bc.get_open_orders()
+                if orders.get("retCode") == 0:
+                    active = [o for o in orders.get("result", {}).get("list", [])
+                              if o.get("orderStatus") in ("New", "PartiallyFilled")]
+                    if active:
+                        log(f"Startup: {len(active)} orphan order ditemukan, cancel.")
+                        bc.cancel_all_orders()
+            except Exception as e:
+                log(f"Startup: cek orphan orders error: {e}")
+
             pos = pm.get_position()
             if isinstance(pos, dict):
                 sym = pos["symbol"]
@@ -611,10 +650,7 @@ def run():
                             log(f"Startup: SL/TP {sym} dipasang ulang (SL={sl} TP={tp}).")
                         except Exception as e:
                             log(f"Startup: gagal pasang SL/TP {sym}: {e}. Emergency close.")
-                            try:
-                                bc.close_position(sym, pos["side"], pos["qty"])
-                            except Exception as e2:
-                                log(f"Emergency close error {sym}: {e2}")
+                            _emergency_close(sym)
                 rm.start_trailing(pos["entry"], side=direction)
                 state.update(position={"side": pos["side"], "qty": pos["qty"],
                                        "entry": pos["entry"], "symbol": sym})
