@@ -18,30 +18,37 @@ Data kandidat (lengkap):
 Posisi saat ini: {position}
 
 Analisis yang WAJIB dilakukan:
-1. TREND: arah tren di 15m, 1h, 4h. Apakah searah atau bertentangan?
-2. KONTEKS BTC: apakah BTC (arus besar) mendukung? Jika BTC bearish, altcoin biasanya ikut turun.
-3. SUPPORT/RESISTANCE: apakah harga dekat resistance (risiko ditolak) atau baru breakout support?
-4. VOLUME: apakah volume naik mendukung pergerakan? Breakout tanpa volume = palsu.
+1. TREND: arah tren di 15m, 1h, 4h. Searah sempurna tidak wajib — yang penting TF dominan (1h/4h) tidak bertentangan keras dengan arah entry.
+2. KONTEKS BTC: apakah BTC (arus besar) mendukung? BTC flat/netral masih boleh entry jika setup coin kuat.
+3. SUPPORT/RESISTANCE: apakah harga dekat resistance (risiko ditolak) atau dekat support (potensi bounce)?
+4. VOLUME: volume naik mendukung. Volume flat boleh jika ada katalis lain (breakout, momentum kuat).
 5. RISK/REWARD: apakah potensi profit >= 1.5x risiko? Hitung dari entry ke TP vs entry ke SL.
 
 Arah trading (LONG/SHORT):
 - long: masuk beli, untung jika harga NAIK. SL di bawah entry, TP di atas entry.
 - short: masuk jual, untung jika harga TURUN. SL di atas entry, TP di bawah entry.
-- Pilih short hanya jika tren multi-TF jelas bearish & BTC mendukung penurunan.
+- Pilih short hanya jika tren dominan bearish & BTC mendukung penurunan.
 
 CONTOH analisis BAGUS (long layak):
-"BTC bullish, SOLUSDT 15m/1h/4h bullish searah, baru breakout resistance 105.2 dengan volume spike 3x, RSI 58 sehat. Entry 105.5, SL 103.5 (di bawah support), TP 109.5 (R/R 2.0)."
+"BTC netral, SOLUSDT 15m/1h bullish, 4h netral, harga bounce dari support 105.2 dengan volume naik, RSI 52 sehat. Entry 105.5, SL 103.5, TP 109.5 (R/R 2.0)."
 
 CONTOH analisis BAGUS (short layak):
-"BTC bearish, ETHUSDT 15m/1h/4h bearish searah, breakdown support 3000 volume naik, RSI 35. Entry 2995, SL 3020 (di atas resistance), TP 2910 (R/R 3.4)."
+"BTC bearish, ETHUSDT 15m/1h/4h bearish, breakdown support 3000 volume naik, RSI 35. Entry 2995, SL 3020, TP 2910 (R/R 3.4)."
 
 CONTOH analisis BURUK (harus hold):
-"harga naik 10% tapi BTC bearish, 1h/4h masih bearish melawan arus, volume turun, dekat resistance kuat. Risiko ditolak tinggi."
+"harga naik 10% tapi BTC bearish kuat, 1h/4h bearish keras melawan arus, volume turun, tepat di resistance kuat. Risiko ditolak tinggi."
+
+CONFIDENCE (0-100) — wajib isi dengan jujur, jangan selalu 0:
+- 80-100: setup sangat kuat, multi-TF searah, volume konfirmasi, R/R bagus.
+- 60-79: setup layak, mayoritas faktor mendukung, R/R memadai.
+- 40-59: setup marginal, ada konflik kecil antar TF.
+- 0-39: setup lemah/tidak jelas → hold.
 
 KEPUTUSAN:
-- long/short hanya jika: trend searah (multi-TF), BTC mendukung, volume konfirmasi, R/R >= 1.5.
-- hold jika: keraguan, breakout belum confirmed, melawan arus BTC, atau tidak ada setup jelas.
-- JANGAN memaksakan entry hanya karena harga bergerak. Lebih baik tidak trading daripada setup jelek.
+- Entry jika setup layak (confidence >= 60) dan R/R >= 1.5.
+- Hold jika confidence < 60, R/R < 1.5, atau melawan arus BTC keras.
+- Jangan tuntut sempurna — cari setup yang LAYAK dengan R/R memadai.
+- Lebih baik tidak trading daripada setup jelek, tapi jangan melewatkan setup bagus hanya karena ada konflik kecil.
 
 Balas HANYA JSON (tanpa teks lain):
 {{"action":"long"|"short"|"hold","confidence":0-100,"entry":angka,"stop_loss":angka,"take_profit":angka,"setup_type":"breakout|momentum|pullback|trend_continuation|volume_spike|other","reason":"satu kalimat"}}"""

@@ -147,7 +147,7 @@ CRASH_PCT = float(os.getenv("CRASH_PCT", "0.03"))
 MAX_CONSECUTIVE_ERRORS = int(os.getenv("MAX_ERRORS", "10"))
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "180"))
 AI_INTERVAL = int(os.getenv("AI_INTERVAL_SECONDS", "900"))
-AI_CONFIDENCE_MIN = int(os.getenv("AI_CONFIDENCE_MIN", "60"))
+AI_CONFIDENCE_MIN = int(os.getenv("AI_CONFIDENCE_MIN", "50"))
 
 LIVE = not DRY_RUN
 
