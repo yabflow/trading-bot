@@ -474,10 +474,15 @@ def _try_entry(rm, balance, symbol, price, signal_res):
 
 
 def _analyze_candidates(top_candidates):
-    """Kirim kandidat terbaik ke AI (sesuai memory gate)."""
+    """Kirim kandidat terbaik ke AI (sesuai memory gate).
+
+    Kumpulkan SEMUA kandidat yang memenuhi kriteria, pilih yang confidence
+    tertinggi — bukan yang pertama ditemukan.
+    """
     mem = candidate_memory.memory
     analyzed = 0
     ai_results = []
+    qualified = []  # (res, sym, candidate) yang memenuhi threshold
     for c in top_candidates[:scanner.AI_CANDIDATES]:
         sym = c["symbol"]
         score = c["score"]
@@ -501,11 +506,18 @@ def _analyze_candidates(top_candidates):
             log(f"AI: {sym} {action.upper()} confidence={conf} setup={setup} reason={reason}")
 
             if action in ("long", "short") and conf >= AI_CONFIDENCE_MIN:
-                state.update(ai_results=ai_results)
-                return res, sym, c
+                qualified.append((res, sym, c))
         except Exception as e:
             log(f"AI error {sym}: {e}")
     state.update(ai_results=ai_results)
+
+    # pilih kandidat terbaik (confidence tertinggi) dari semua yang memenuhi kriteria
+    if qualified:
+        best = max(qualified, key=lambda x: int(x[0].get("confidence", 0)))
+        if len(qualified) > 1:
+            log(f"BOT: {len(qualified)} kandidat memenuhi kriteria, pilih terbaik: {best[1]} "
+                f"(confidence={best[0].get('confidence')})")
+        return best[0], best[1], best[2]
     return None, None, None
 
 
