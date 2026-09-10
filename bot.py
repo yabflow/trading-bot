@@ -201,9 +201,15 @@ def sell_all(rm):
                 state.set_alert(f"POSISI MASIH TERBUKA setelah sell_all: {r}. Retry diperlukan.")
                 log("BOT: sell_all belum tuntas, posisi masih terbuka. Retry next loop.")
                 return
+            # #2: status posisi UNKNOWN setelah close → jangan reset state, bot HALTED aman.
+            if any(str(x) in ("VERIFY-UNKNOWN", "UNKNOWN") for x in r):
+                state.set_alert(f"sell_all: status posisi UNKNOWN setelah close. Bot HALTED, jangan entry.")
+                log("BOT: sell_all status UNKNOWN → bot HALTED, state TIDAK direset.")
+                return
         except Exception as e:
             log(f"Close all error: {e}")
             state.set_alert(f"GAGAL TUTUP POSISI: {e}")
+            return
     else:
         log("[DRY-RUN] close semua (skip)")
     rm.reset_trailing()
@@ -271,6 +277,14 @@ def _verify_sl_tp(symbol, action, expected_qty=None):
     else:
         if not (tp < detail["entry"] < sl):
             return False, f"SL/TP arah salah SHORT (TP={tp} entry={detail['entry']} SL={sl})"
+
+    # #3: actual Bybit liqPrice — likuidasi harus jauh di luar SL, bukan hanya estimasi.
+    liq = detail.get("liq_price")
+    if liq:
+        if action == "long" and liq >= sl:
+            return False, f"likuidasi aktual {liq} terlalu dekat SL {sl} (LONG)"
+        if action == "short" and liq <= sl:
+            return False, f"likuidasi aktual {liq} terlalu dekat SL {sl} (SHORT)"
 
     return True, "SL/TP terverifikasi"
 
@@ -387,7 +401,9 @@ def _try_entry(rm, balance, symbol, price, signal_res):
             log(f"BOT: Rejected {symbol} — qty < minOrderQty.")
             return
 
-        # cek jarak likuidasi: likuidasi harus jauh di luar SL
+        # #3: cek jarak likuidasi pakai actual Bybit liqPrice, bukan estimasi.
+        # liqPrice hanya tersedia SETELAH posisi terbuka → cek di _verify_sl_tp pasca-entry.
+        # Pre-entry: estimasi kasar tetap sebagai first-pass guard (cepat reject jelas buruk).
         liq = _est_liq_price(action, entry)
         if liq is not None:
             if action == "long" and liq >= stop_loss:
@@ -577,6 +593,11 @@ def _manage_position(rm, pos):
             if isinstance(detail, dict):
                 log(f"BOT: posisi {sym} masih aktif ({detail['side']} qty={detail['qty']}) setelah close. Akan retry next loop.")
                 return  # jangan catat PnL/reset trailing sebelum benar tertutup
+            if detail == "UNKNOWN":
+                # #1: UNKNOWN ≠ CLOSED. Jangan catat PnL / reset state sampai pasti tertutup.
+                state.set_alert(f"close {sym}: status posisi UNKNOWN setelah close. Bot HALTED, jangan entry.")
+                log(f"BOT: close {sym} status UNKNOWN → state TIDAK direset. Retry next loop.")
+                return
         pnl = (price - entry) / entry * 100 if entry else 0
         if direction == "short":
             pnl = -pnl

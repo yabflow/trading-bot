@@ -15,8 +15,9 @@ BASE_DIR = os.path.dirname(__file__)
 BOT_PID = None
 BOT_LOG_TAIL = []
 
-DASH_USER = os.getenv("DASH_USER", "Yab")
-DASH_PASS = os.getenv("DASH_PASS", "Samudra28")
+DASH_USER = os.getenv("DASH_USER", "")
+DASH_PASS = os.getenv("DASH_PASS", "")
+AUTH_ENABLED = bool(DASH_USER and DASH_PASS)
 
 INDEX_HTML = """<!DOCTYPE html>
 <html lang="id">
@@ -479,6 +480,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _auth_ok(self):
+        if not AUTH_ENABLED:
+            return False  # fail-closed: jika env tidak diset, tolak semua
         h = self.headers.get("Authorization", "")
         if not h.startswith("Basic "):
             return False
@@ -752,6 +755,8 @@ def _test_ai_connection(base_url, api_key, model):
 
 
 def main():
+    if not AUTH_ENABLED:
+        print("WARNING: DASH_USER / DASH_PASS tidak diset di .env — semua endpoint akan 401 (fail-closed).")
     srv = HTTPServer(("0.0.0.0", PORT), Handler)
     print(f"Daemon jalan: http://0.0.0.0:{PORT}")
     try:
