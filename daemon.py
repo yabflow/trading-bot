@@ -3,12 +3,17 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from dotenv import load_dotenv
+
 import state
+
+load_dotenv()
 
 PORT = int(os.getenv("WEB_PORT", "8080"))
 BASE_DIR = os.path.dirname(__file__)
@@ -426,8 +431,10 @@ def start_bot():
     if BOT_PID and _alive(BOT_PID):
         return False, "bot sudah jalan"
     env = dict(os.environ)
+    venv_py = os.path.join(BASE_DIR, ".venv", "bin", "python")
+    py = venv_py if os.path.exists(venv_py) else sys.executable
     proc = subprocess.Popen(
-        ["python", "-u", "bot.py"],
+        [py, "-u", "bot.py"],
         cwd=BASE_DIR,
         env=env,
         stdout=subprocess.PIPE,
