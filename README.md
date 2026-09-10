@@ -10,6 +10,10 @@ AI-driven crypto trading bot untuk Bybit USDT Perpetual Futures. Scan seluruh pa
 - Support/resistance + volume profile + BTC context
 - DeepSeek AI untuk keputusan entry/exit
 - SL, TP, dan trailing protection exchange-side di Bybit (aman jika koneksi mati)
+- Verifikasi SL/TP exchange-side setelah entry; gagal → emergency close otomatis
+- Cek jarak likuidasi sebelum entry (tolak kalau likuidasi terlalu dekat SL)
+- State posisi UNKNOWN (API error) → tidak entry, tidak monitor sampai jelas
+- Startup reconciliation: ambil alih posisi tertinggal saat restart
 - Trailing stop dinamis (0.5%-1.7%) via move SL exchange-side
 - Break-even otomatis (trigger di +0.5%)
 - Time stop (4 jam)
@@ -60,6 +64,7 @@ http://localhost:8080
 | `candidate_memory.py` | Track kandidat, cooldown, retrigger |
 | `state.py` | Shared state, history, export |
 | `market_analyzer.py` | Analisis pasar on-demand |
+| `test_suite.py` | Test otomatis (AI normalize, UNKNOWN state, risk sizing) |
 | `scripts/` | Start/stop daemon |
 | `riwayat_transaksi/` | Riwayat trade harian (JSON + TXT) |
 
@@ -86,5 +91,16 @@ Penting:
 - Setup sangat kuat: maks 1% risk
 - Minimum R/R: 1.5x
 - SL/TP/trailing exchange-side (Bybit) — tetap aman walau bot mati
+- Verifikasi SL/TP + emergency close jika protective order gagal
+- Cek likuidasi: tolak trade jika harga likuidasi terlalu dekat SL
 - Circuit breaker: auto close & stop kalau turun 3% dari puncak harian
 - Daily max loss: -1%
+
+## Test
+
+```bash
+source .venv/bin/activate
+python test_suite.py      # unit test (AI, posisi, risk)
+python test_bybit.py      # cek koneksi market data publik
+python test_private.py    # cek akses akun (perlu API key)
+```
