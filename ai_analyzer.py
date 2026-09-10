@@ -114,7 +114,7 @@ def analyze(market_data, position):
         "model": AI_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
-        "max_tokens": 300,
+        "max_tokens": 2000,
     }).encode()
     req = urllib.request.Request(
         AI_BASE_URL + "/chat/completions",
@@ -125,9 +125,30 @@ def analyze(market_data, position):
             "User-Agent": "TradingBot/1.0",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        resp = json.loads(r.read())
-    content = resp["choices"][0]["message"]["content"]
+    with urllib.request.urlopen(req, timeout=60) as r:
+        raw = r.read().decode("utf-8", errors="replace")
+
+    # proxy/9router kadang return SSE (text/event-stream) walau stream=False:
+    #   {json}\ndata: [DONE]\n  → ambil bagian JSON pertama saja.
+    content = None
+    for chunk in raw.split("data:"):
+        chunk = chunk.strip()
+        if not chunk or chunk == "[DONE]":
+            continue
+        try:
+            obj = json.loads(chunk)
+        except Exception:
+            continue
+        msg = obj.get("choices", [{}])[0].get("message", {}).get("content")
+        if msg:
+            content = msg
+            break
+    if content is None:
+        try:
+            resp = json.loads(raw)
+            content = resp["choices"][0]["message"]["content"]
+        except Exception:
+            raise ValueError("AI response kosong/streaming tak terduga")
     return _parse_json(content)
 
 
