@@ -436,7 +436,7 @@ def test_ai_retry_then_fallback_model():
 
 
 def test_ai_round_robin_recovery():
-    # setelah fallback ke model 2, tiap 1 jam auto cek balik ke model 1
+    # setelah fallback ke model 2, tiap 15 menit auto cek balik ke model utama
     import time as _t
     saved = (ai_analyzer.AI_MODELS, ai_analyzer.AI_RECOVERY_SECONDS)
     try:
@@ -448,6 +448,47 @@ def test_ai_round_robin_recovery():
         assert ai_analyzer._model_idx == 0
     finally:
         ai_analyzer.AI_MODELS, ai_analyzer.AI_RECOVERY_SECONDS = saved
+
+
+def test_ai_recovery_respects_priority_order():
+    # sedang di model 3, recovery: model 1 down -> harus naik ke model 2 (bukan skip ke 3)
+    saved = (ai_analyzer.AI_MODELS, ai_analyzer.AI_RETRY, ai_analyzer.AI_RECOVERY_SECONDS)
+    try:
+        ai_analyzer.AI_MODELS = ["ts/thirty/model-1", "ts/thirty/model-2", "ts/thirty/model-3"]
+        ai_analyzer.AI_RETRY = 3
+        ai_analyzer.AI_RECOVERY_SECONDS = 900
+        ai_analyzer._model_idx = 2            # sedang di model 3
+        ai_analyzer._last_recovery_check = ai_analyzer.time.time() - 1000
+        calls = {"models": []}
+
+        def fake_urlopen(req, timeout=60):
+            model = json.loads(req.data)["model"]
+            calls["models"].append(model)
+
+            class R:
+                def read(s):
+                    if model == "ts/thirty/model-1":
+                        raise Exception("503 model_unavailable")
+                    return _fake_chat_response()
+                def __enter__(s): return s
+                def __exit__(s, *a): return False
+            return R()
+
+        orig = ai_analyzer.urllib.request.urlopen
+        ai_analyzer.urllib.request.urlopen = fake_urlopen
+        try:
+            res = ai_analyzer.analyze({"harga": 1}, "none")
+        finally:
+            ai_analyzer.urllib.request.urlopen = orig
+
+        # model 1 gagal 3x -> naik ke model 2 -> sukses (tidak ke model 3)
+        assert calls["models"].count("ts/thirty/model-1") == 3
+        assert calls["models"][-1] == "ts/thirty/model-2"
+        assert "ts/thirty/model-3" not in calls["models"]
+        assert res["action"] == "hold"
+        assert ai_analyzer._active_model == "ts/thirty/model-2"
+    finally:
+        ai_analyzer.AI_MODELS, ai_analyzer.AI_RETRY, ai_analyzer.AI_RECOVERY_SECONDS = saved
 
 
 def test_ai_missing_config_fails_safe():
