@@ -141,7 +141,7 @@ class RiskManager:
             return 0.01
         if profit >= 0.01:
             return 0.007
-        return 0.005
+        return TRAILING_STOP
 
     def check_trailing(self, current_price):
         """True jika harga balik melewati trailing % (long: turun, short: naik)."""
