@@ -30,6 +30,7 @@ class BotState:
             "last_ai_confidence": 0,
             "last_ai_reason": "",
             "last_ai_time": None,
+            "ai_model_active": None,
             "last_update": None,
             "alert": None,
             "scanned_pairs": 0,
@@ -65,6 +66,7 @@ class BotState:
                           "risk_pct", "consecutive_losses", "cooldown", "position",
                           "highest_price", "trailing_pct", "last_ai_action",
                           "last_ai_confidence", "last_ai_reason", "last_ai_time",
+                          "ai_model_active",
                           "last_update", "alert", "scanned_pairs", "candidates", "ai_results", "log"):
                     if k in s:
                         self.data[k] = s[k]
@@ -78,6 +80,7 @@ class BotState:
                     "risk_pct", "consecutive_losses", "cooldown", "position",
                     "highest_price", "trailing_pct", "last_ai_action",
                     "last_ai_confidence", "last_ai_reason", "last_ai_time",
+                    "ai_model_active",
                     "last_update", "alert", "scanned_pairs", "candidates", "ai_results", "log")
             snapshot = {k: self.data[k] for k in keys}
         tmp = BOT_STATE_FILE + ".tmp"

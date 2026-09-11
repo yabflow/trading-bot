@@ -35,6 +35,7 @@ AI_MODEL = AI_MODELS[0]  # backward-compat: model aktif saat ini
 # round-robin state: index model aktif + kapan terakhir cek pemulihan
 _model_idx = 0
 _last_recovery_check = time.time()
+_active_model = None  # model terakhir yang berhasil dipakai (untuk indikator dashboard)
 
 
 def _current_model():
@@ -154,6 +155,7 @@ def analyze_candidate(candidate_data, position="none"):
 
 
 def analyze(market_data, position):
+    global _active_model
     prompt = PROMPT.format(market_data=json.dumps(market_data, ensure_ascii=False), position=position)
     last_err = None
     # coba setiap model (mulai dari model aktif), tiap model retry AI_RETRY kali
@@ -161,7 +163,9 @@ def analyze(market_data, position):
         model = _current_model()
         for _ in range(AI_RETRY):
             try:
-                return _analyze_with_model(model, prompt)
+                res = _analyze_with_model(model, prompt)
+                _active_model = model
+                return res
             except Exception as e:
                 last_err = e
         # semua retry model ini gagal → geser cadangan

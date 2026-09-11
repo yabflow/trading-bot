@@ -501,7 +501,7 @@ def _analyze_candidates(top_candidates):
                 qualified.append((res, sym, c))
         except Exception as e:
             log(f"AI error {sym}: {e}")
-    state.update(ai_results=ai_results)
+    state.update(ai_results=ai_results, ai_model_active=getattr(ai, "_active_model", None))
 
     # pilih kandidat terbaik (confidence tertinggi) dari semua yang memenuhi kriteria
     if qualified:

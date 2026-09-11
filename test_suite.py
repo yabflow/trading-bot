@@ -364,6 +364,7 @@ def test_ai_model_routing_from_config():
         assert captured["body"]["model"] == "ts/thirty/deepseek-v4-flash"
         assert captured["url"] == "http://localhost:20128/v1/chat/completions"
         assert captured["auth"] == "Bearer sk-test"
+        assert ai_analyzer._active_model == "ts/thirty/deepseek-v4-flash"
     finally:
         ai_analyzer.AI_MODELS, ai_analyzer.AI_MODEL, ai_analyzer.AI_BASE_URL, ai_analyzer.AI_API_KEY = saved
 

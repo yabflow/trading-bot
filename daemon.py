@@ -177,6 +177,7 @@ input{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background
 <div class="col" style="flex:2;min-width:220px"><div class="label">Model 3 (cadangan akhir)</div><input id="cfgModel3" placeholder="ts/thirty/model-cadangan-3 (opsional)"></div>
 </div>
 <div class="sub" style="margin-bottom:10px">Urutan prioritas: model 1 dipakai, gagal 3x → model 2, lalu model 3. Tiap 1 jam auto cek balik ke model 1.</div>
+<div id="cfgActive" style="margin-bottom:12px;font-size:0.9em"></div>
 <button class="btn btn-export" onclick="saveConfig()">💾 Simpan & Test Config</button>
 <div id="cfgMsg" style="margin-top:10px;font-size:0.85em"></div>
 </div>
@@ -299,6 +300,15 @@ const models=d.models||[];
 document.getElementById('cfgModel1').value=models[0]||'';
 document.getElementById('cfgModel2').value=models[1]||'';
 document.getElementById('cfgModel3').value=models[2]||'';
+const active=d.active_model||'';
+const el=document.getElementById('cfgActive');
+if(active){
+let idx=models.indexOf(active);
+let label=idx>=0?('Model '+(idx+1)+(idx===0?' (utama)':'')):active;
+el.innerHTML='<span style="color:#2ecc71">●</span> Sedang dipakai: <b>'+active+'</b> <span class="dim">['+label+']</span>';
+}else{
+el.innerHTML='<span class="dim">Belum ada model aktif (bot belum jalan).</span>';
+}
 }catch(e){}
 }
 async function loadBotConfig(){
@@ -580,6 +590,7 @@ class Handler(BaseHTTPRequestHandler):
                 "base_url": env.get("AI_BASE_URL", ""),
                 "api_key": env.get("AI_API_KEY", ""),
                 "models": models,
+                "active_model": state.state.data.get("ai_model_active"),
             })
         elif path == "/botconfig":
             env = _load_env()
