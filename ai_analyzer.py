@@ -4,11 +4,23 @@ import urllib.request
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=False)
 
-AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.thirtystore.com/v1")
-AI_API_KEY = os.getenv("AI_API_KEY", "")
-AI_MODEL = os.getenv("AI_MODEL", "thirty/deepseek-v4-pro-0813")
+
+def _require_config(base_url, api_key, model):
+    """Fail-safe: konfigurasi AI wajib lengkap, tidak ada fallback ke provider lain."""
+    if not (base_url and api_key and model):
+        raise RuntimeError(
+            "Konfigurasi AI tidak lengkap: AI_BASE_URL, AI_API_KEY, dan AI_MODEL wajib diset di .env. "
+            "Tidak ada fallback ke provider lain."
+        )
+
+
+AI_BASE_URL = (os.getenv("AI_BASE_URL") or "").strip()
+AI_API_KEY = (os.getenv("AI_API_KEY") or "").strip()
+AI_MODEL = (os.getenv("AI_MODEL") or "").strip()
+
+_require_config(AI_BASE_URL, AI_API_KEY, AI_MODEL)
 
 PROMPT = """Kamu analis trading crypto (Bybit USDT Perpetual Futures) berpengalaman. Analisis SATU kandidat coin.
 

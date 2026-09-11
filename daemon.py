@@ -430,7 +430,10 @@ def start_bot():
     global BOT_PID
     if BOT_PID and _alive(BOT_PID):
         return False, "bot sudah jalan"
+    # baca .env terbaru (bukan os.environ daemon yang stale) supaya
+    # perubahan AI config dari dashboard diteruskan ke bot saat START/RESTART.
     env = dict(os.environ)
+    env.update(_load_env())
     venv_py = os.path.join(BASE_DIR, ".venv", "bin", "python")
     py = venv_py if os.path.exists(venv_py) else sys.executable
     proc = subprocess.Popen(

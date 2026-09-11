@@ -323,6 +323,126 @@ def test_sell_all_verified_closed_resets_state():
         bot.DRY_RUN = orig_dry
 
 
+def test_ai_model_routing_from_config():
+    # worker kirim model yang dipilih dashboard (via AI_MODEL), bukan fallback
+    saved = (ai_analyzer.AI_MODEL, ai_analyzer.AI_BASE_URL, ai_analyzer.AI_API_KEY)
+    try:
+        ai_analyzer.AI_MODEL = "ts/thirty/deepseek-v4.1-flash"
+        ai_analyzer.AI_BASE_URL = "http://localhost:20128/v1"
+        ai_analyzer.AI_API_KEY = "sk-test"
+
+        captured = {}
+
+        def fake_urlopen(req, timeout=60):
+            captured["url"] = req.full_url
+            captured["body"] = json.loads(req.data)
+            captured["auth"] = req.get_header("Authorization")
+
+            class R:
+                def read(s):
+                    return b'{"choices":[{"message":{"content":"{\\"action\\":\\"hold\\",\\"confidence\\":0,\\"entry\\":0,\\"stop_loss\\":0,\\"take_profit\\":0}"}}]}'
+                def __enter__(s): return s
+                def __exit__(s, *a): return False
+            return R()
+
+        orig = ai_analyzer.urllib.request.urlopen
+        ai_analyzer.urllib.request.urlopen = fake_urlopen
+        try:
+            ai_analyzer.analyze({"harga": 78000}, "none")
+        finally:
+            ai_analyzer.urllib.request.urlopen = orig
+
+        assert captured["body"]["model"] == "ts/thirty/deepseek-v4.1-flash"
+        assert captured["url"] == "http://localhost:20128/v1/chat/completions"
+        assert captured["auth"] == "Bearer sk-test"
+    finally:
+        ai_analyzer.AI_MODEL, ai_analyzer.AI_BASE_URL, ai_analyzer.AI_API_KEY = saved
+
+
+def test_ai_model_prefix_kept_for_9router():
+    # model dengan prefix ts/ tidak boleh di-strip/diganti sebelum dikirim
+    saved = ai_analyzer.AI_MODEL
+    try:
+        ai_analyzer.AI_MODEL = "ts/thirty/deepseek-v4.1-flash"
+        captured = {}
+
+        def fake_urlopen(req, timeout=60):
+            captured["model"] = json.loads(req.data)["model"]
+
+            class R:
+                def read(s):
+                    return b'{"choices":[{"message":{"content":"{\\"action\\":\\"hold\\",\\"confidence\\":0,\\"entry\\":0,\\"stop_loss\\":0,\\"take_profit\\":0}"}}]}'
+                def __enter__(s): return s
+                def __exit__(s, *a): return False
+            return R()
+
+        orig = ai_analyzer.urllib.request.urlopen
+        ai_analyzer.urllib.request.urlopen = fake_urlopen
+        try:
+            ai_analyzer.analyze({"harga": 1}, "none")
+        finally:
+            ai_analyzer.urllib.request.urlopen = orig
+        assert captured["model"] == "ts/thirty/deepseek-v4.1-flash"
+    finally:
+        ai_analyzer.AI_MODEL = saved
+
+
+def test_ai_missing_config_fails_safe():
+    # config kosong → tidak fallback diam-diam ke deepseek/thirty
+    try:
+        ai_analyzer._require_config("", "", "")
+        assert False, "seharusnya raise RuntimeError"
+    except RuntimeError as e:
+        assert "AI_BASE_URL" in str(e)
+    try:
+        ai_analyzer._require_config("http://x/v1", "sk", "")
+        assert False, "seharusnya raise RuntimeError"
+    except RuntimeError as e:
+        assert "AI_MODEL" in str(e)
+
+
+def test_start_bot_uses_env_file():
+    import daemon
+
+    captured = {}
+
+    def fake_popen(args, **kw):
+        captured["env"] = kw.get("env", {})
+        captured["cwd"] = kw.get("cwd")
+
+        class P:
+            pid = 4242
+            stdout = None
+            def __init__(self): pass
+            def wait(self): return 0
+        p = P()
+        p.stdout = []
+        return p
+
+    orig_pop = daemon.subprocess.Popen
+    orig_botpid = daemon.BOT_PID
+    orig_alive = daemon._alive
+    orig_update = daemon.state.state.update
+    daemon.subprocess.Popen = fake_popen
+    daemon.BOT_PID = None
+    daemon._alive = lambda pid: False
+    daemon.state.state.update = lambda **kw: None
+    try:
+        ok, msg = daemon.start_bot()
+    finally:
+        daemon.subprocess.Popen = orig_pop
+        daemon.BOT_PID = orig_botpid
+        daemon._alive = orig_alive
+        daemon.state.state.update = orig_update
+
+    assert ok
+    env = captured["env"]
+    # AI config harus berasal dari .env (yang dibaca _load_env), bukan os.environ stale
+    assert env.get("AI_BASE_URL") == daemon._load_env().get("AI_BASE_URL")
+    assert env.get("AI_MODEL") == daemon._load_env().get("AI_MODEL")
+    assert env.get("AI_API_KEY") == daemon._load_env().get("AI_API_KEY")
+
+
 def test_dashboard_auth_fail_closed():
     import base64 as b64
     import daemon
