@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 AI_RETRY = 3                       # retry tiap model sebelum pindah cadangan
-AI_RECOVERY_SECONDS = 3600         # cek balik ke model utama tiap 1 jam
+AI_RECOVERY_SECONDS = 900          # cek balik ke model utama tiap 15 menit
 
 
 def _require_config(base_url, api_key, models):

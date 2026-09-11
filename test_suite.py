@@ -441,9 +441,9 @@ def test_ai_round_robin_recovery():
     saved = (ai_analyzer.AI_MODELS, ai_analyzer.AI_RECOVERY_SECONDS)
     try:
         ai_analyzer.AI_MODELS = ["ts/thirty/model-1", "ts/thirty/model-2"]
-        ai_analyzer.AI_RECOVERY_SECONDS = 3600
+        ai_analyzer.AI_RECOVERY_SECONDS = 900
         ai_analyzer._model_idx = 1            # sedang di model 2
-        ai_analyzer._last_recovery_check = _t.time() - 4000  # lewat 1 jam
+        ai_analyzer._last_recovery_check = _t.time() - 1000  # lewat 15 menit
         assert ai_analyzer._current_model() == "ts/thirty/model-1"  # balik ke utama
         assert ai_analyzer._model_idx == 0
     finally:

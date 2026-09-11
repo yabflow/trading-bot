@@ -169,14 +169,17 @@ input{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background
 </div>
 <div class="row" style="margin-bottom:14px">
 <div class="col" style="flex:2;min-width:220px"><div class="label">Model 1 (utama)</div><input id="cfgModel1" placeholder="ts/thirty/model-utama"></div>
+<div class="col" style="flex:0;min-width:90px"><div class="label">&nbsp;</div><button class="btn btn-export" onclick="testModel(1)">Test</button></div>
 </div>
 <div class="row" style="margin-bottom:10px">
 <div class="col" style="flex:2;min-width:220px"><div class="label">Model 2 (cadangan)</div><input id="cfgModel2" placeholder="ts/thirty/model-cadangan-2 (opsional)"></div>
+<div class="col" style="flex:0;min-width:90px"><div class="label">&nbsp;</div><button class="btn btn-export" onclick="testModel(2)">Test</button></div>
 </div>
 <div class="row" style="margin-bottom:14px">
 <div class="col" style="flex:2;min-width:220px"><div class="label">Model 3 (cadangan akhir)</div><input id="cfgModel3" placeholder="ts/thirty/model-cadangan-3 (opsional)"></div>
+<div class="col" style="flex:0;min-width:90px"><div class="label">&nbsp;</div><button class="btn btn-export" onclick="testModel(3)">Test</button></div>
 </div>
-<div class="sub" style="margin-bottom:10px">Urutan prioritas: model 1 dipakai, gagal 3x → model 2, lalu model 3. Tiap 1 jam auto cek balik ke model 1.</div>
+<div class="sub" style="margin-bottom:10px">Urutan prioritas: model 1 dipakai, gagal 3x → model 2, lalu model 3. Tiap 15 menit auto cek balik ke model 1.</div>
 <div id="cfgActive" style="margin-bottom:12px;font-size:0.9em"></div>
 <button class="btn btn-export" onclick="saveConfig()">💾 Simpan & Test Config</button>
 <div id="cfgMsg" style="margin-top:10px;font-size:0.85em"></div>
@@ -374,6 +377,20 @@ const r=await fetch('/config',{method:'POST',headers:{'Content-Type':'applicatio
 const d=await r.json();
 if(d.ok){msg.textContent='✅ '+d.msg;msg.className='green';}
 else{msg.textContent='❌ '+d.msg;msg.className='red';}
+}
+async function testModel(n){
+const model=document.getElementById('cfgModel'+n).value.trim();
+if(!model){alert('Isi model '+n+' dulu.');return;}
+const body={base_url:document.getElementById('cfgBase').value.trim(),api_key:document.getElementById('cfgKey').value.trim(),model:model};
+const msg=document.getElementById('cfgMsg');
+msg.textContent='Testing model '+n+' ('+model+')...';
+msg.className='yellow';
+try{
+const r=await fetch('/config/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+const d=await r.json();
+if(d.ok){msg.textContent='✅ Model '+n+' ('+model+') OK';msg.className='green';}
+else{msg.textContent='❌ Model '+n+' ('+model+') gagal: '+(d.msg||d.error||'error');msg.className='red';}
+}catch(e){msg.textContent='❌ Gagal: '+e;msg.className='red';}
 }
 async function loadMarket(){
 const box=document.getElementById('marketBox');
@@ -695,6 +712,28 @@ class Handler(BaseHTTPRequestHandler):
 
             _save_env(updates)
             self._json({"ok": True, "msg": "config disimpan. Restart bot agar berlaku."})
+        elif path == "/config/test":
+            # test koneksi satu model tertentu (tanpa menyimpan)
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b"{}"
+            try:
+                data = json.loads(body)
+            except Exception:
+                data = {}
+            base_url = (data.get("base_url") or "").strip()
+            api_key = (data.get("api_key") or "").strip()
+            model = (data.get("model") or "").strip()
+            if not (base_url and model):
+                self._json({"ok": False, "msg": "base_url dan model wajib diisi"})
+                return
+            try:
+                ok, msg = _test_ai_connection(base_url, api_key, model)
+                if not ok:
+                    self._json({"ok": False, "msg": "test koneksi AI gagal"})
+                    return
+                self._json({"ok": True, "msg": "OK"})
+            except Exception as e:
+                self._json({"ok": False, "msg": str(e)})
         elif path == "/botconfig":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b"{}"
@@ -775,6 +814,7 @@ def _save_env(updates):
 
 def _test_ai_connection(base_url, api_key, model):
     import urllib.request as ur
+    import urllib.error as ue
     body = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": "reply OK"}],
@@ -785,8 +825,18 @@ def _test_ai_connection(base_url, api_key, model):
         "Content-Type": "application/json",
         "User-Agent": "TradingBot/1.0",
     })
-    with ur.urlopen(req, timeout=20) as r:
-        return True, "OK"
+    try:
+        with ur.urlopen(req, timeout=20) as r:
+            return True, "OK"
+    except ue.HTTPError as e:
+        detail = ""
+        try:
+            raw = e.read().decode("utf-8", errors="replace")
+            err = json.loads(raw).get("error", {})
+            detail = err.get("message") or err.get("type") or raw[:200]
+        except Exception:
+            detail = str(e)
+        raise RuntimeError(f"HTTP {e.code}: {detail}")
 
 
 def main():
