@@ -1,26 +1,59 @@
 import json
 import os
+import time
 import urllib.request
 
 from dotenv import load_dotenv
 
 load_dotenv(override=False)
 
+AI_RETRY = 3                       # retry tiap model sebelum pindah cadangan
+AI_RECOVERY_SECONDS = 3600         # cek balik ke model utama tiap 1 jam
 
-def _require_config(base_url, api_key, model):
+
+def _require_config(base_url, api_key, models):
     """Fail-safe: konfigurasi AI wajib lengkap, tidak ada fallback ke provider lain."""
-    if not (base_url and api_key and model):
+    if not (base_url and api_key and models):
         raise RuntimeError(
-            "Konfigurasi AI tidak lengkap: AI_BASE_URL, AI_API_KEY, dan AI_MODEL wajib diset di .env. "
+            "Konfigurasi AI tidak lengkap: AI_BASE_URL, AI_API_KEY, dan AI_MODEL(S) wajib diset di .env. "
             "Tidak ada fallback ke provider lain."
         )
 
 
 AI_BASE_URL = (os.getenv("AI_BASE_URL") or "").strip()
 AI_API_KEY = (os.getenv("AI_API_KEY") or "").strip()
-AI_MODEL = (os.getenv("AI_MODEL") or "").strip()
 
-_require_config(AI_BASE_URL, AI_API_KEY, AI_MODEL)
+# Urutan model prioritas: AI_MODELS="model1,model2,model3" (1 utama, 3 terakhir).
+# AI_MODEL (satu) tetap didukung sebagai model utama.
+_models_raw = (os.getenv("AI_MODELS") or os.getenv("AI_MODEL") or "").strip()
+AI_MODELS = [m.strip() for m in _models_raw.split(",") if m.strip()]
+
+_require_config(AI_BASE_URL, AI_API_KEY, AI_MODELS)
+
+AI_MODEL = AI_MODELS[0]  # backward-compat: model aktif saat ini
+
+# round-robin state: index model aktif + kapan terakhir cek pemulihan
+_model_idx = 0
+_last_recovery_check = time.time()
+
+
+def _current_model():
+    """Model aktif sekarang (bisa bergeser saat fallback/recovery)."""
+    global _model_idx, _last_recovery_check
+    # auto-recovery: tiap AI_RECOVERY_SECONDS coba balik ke model prioritas (idx 0)
+    if _model_idx > 0 and (time.time() - _last_recovery_check) >= AI_RECOVERY_SECONDS:
+        _last_recovery_check = time.time()
+        _model_idx = 0
+    return AI_MODELS[_model_idx]
+
+
+def _on_model_failed():
+    """Model aktif gagal semua retry → geser ke cadangan berikutnya."""
+    global _model_idx, _last_recovery_check
+    _last_recovery_check = time.time()
+    if _model_idx < len(AI_MODELS) - 1:
+        _model_idx += 1
+    return AI_MODELS[_model_idx]
 
 PROMPT = """Kamu analis trading crypto (Bybit USDT Perpetual Futures) berpengalaman. Analisis SATU kandidat coin.
 
@@ -100,12 +133,12 @@ def _normalize(res):
         "setup_type": res.get("setup_type", "other"),
         "reason": res.get("reason", ""),
     }
-    # arah tidak valid → hold (fail-safe)
+    # arah tidak valid → hold (fail-safe). TP tidak wajib (trailing murni), SL wajib.
     if action == "long":
-        if entry <= 0 or not (stop_loss < entry < take_profit):
+        if entry <= 0 or not (stop_loss < entry):
             out["action"] = "hold"
     elif action == "short":
-        if entry <= 0 or not (take_profit < entry < stop_loss):
+        if entry <= 0 or not (stop_loss > entry):
             out["action"] = "hold"
     else:
         out["confidence"] = 0
@@ -122,8 +155,23 @@ def analyze_candidate(candidate_data, position="none"):
 
 def analyze(market_data, position):
     prompt = PROMPT.format(market_data=json.dumps(market_data, ensure_ascii=False), position=position)
+    last_err = None
+    # coba setiap model (mulai dari model aktif), tiap model retry AI_RETRY kali
+    for attempt in range(len(AI_MODELS)):
+        model = _current_model()
+        for _ in range(AI_RETRY):
+            try:
+                return _analyze_with_model(model, prompt)
+            except Exception as e:
+                last_err = e
+        # semua retry model ini gagal → geser cadangan
+        _on_model_failed()
+    raise RuntimeError(f"Semua model AI gagal: {last_err}")
+
+
+def _analyze_with_model(model, prompt):
     body = json.dumps({
-        "model": AI_MODEL,
+        "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": 2000,

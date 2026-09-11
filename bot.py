@@ -266,17 +266,16 @@ def _verify_sl_tp(symbol, action, expected_qty=None):
         if detail["qty"] < expected_qty * 0.95:
             return False, f"qty posisi {detail['qty']} < ekspektasi {expected_qty} (partial fill?)"
 
-    # verify SL & TP ada dan arah benar
+    # verify SL wajib ada dan arah benar (TP opsional — trailing murni)
     sl = detail.get("stop_loss")
-    tp = detail.get("take_profit")
-    if sl is None or tp is None:
-        return False, f"SL/TP belum terpasang (SL={sl}, TP={tp})"
+    if sl is None:
+        return False, f"SL belum terpasang (SL={sl})"
     if action == "long":
-        if not (sl < detail["entry"] < tp):
-            return False, f"SL/TP arah salah LONG (SL={sl} entry={detail['entry']} TP={tp})"
+        if not (sl < detail["entry"]):
+            return False, f"SL arah salah LONG (SL={sl} entry={detail['entry']})"
     else:
-        if not (tp < detail["entry"] < sl):
-            return False, f"SL/TP arah salah SHORT (TP={tp} entry={detail['entry']} SL={sl})"
+        if not (sl > detail["entry"]):
+            return False, f"SL arah salah SHORT (SL={sl} entry={detail['entry']})"
 
     # #3: actual Bybit liqPrice — likuidasi harus jauh di luar SL, bukan hanya estimasi.
     liq = detail.get("liq_price")
@@ -286,7 +285,7 @@ def _verify_sl_tp(symbol, action, expected_qty=None):
         if action == "short" and liq <= sl:
             return False, f"likuidasi aktual {liq} terlalu dekat SL {sl} (SHORT)"
 
-    return True, "SL/TP terverifikasi"
+    return True, "SL terverifikasi"
 
 
 def _emergency_close(symbol):
@@ -310,12 +309,12 @@ def _emergency_close(symbol):
         log(f"BOT: EMERGENCY CLOSE {symbol} sukses, posisi=0.")
 
 
-def _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss, take_profit):
+def _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss):
     """Setelah create_order timeout/error, cek state Bybit: apakah posisi terbentuk?
 
     Timeout bukan berarti order gagal. Jika posisi terbentuk:
-      - dengan SL/TP valid → ambil alih (adopt) tanpa entry ulang.
-      - tanpa SL/TP → pasang protection, jika gagal → emergency close.
+      - dengan SL valid → ambil alih (adopt) tanpa entry ulang.
+      - tanpa SL → pasang protection, jika gagal → emergency close.
     Jika tidak ada posisi → aman, tidak ada aksi.
     """
     time.sleep(1)
@@ -335,23 +334,23 @@ def _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss, take_p
         _emergency_close(symbol)
         return
 
-    # cek SL/TP terpasang benar
+    # cek SL terpasang benar
     ok, msg = _verify_sl_tp(symbol, action)
     if ok:
-        log(f"BOT: posisi {symbol} adopt dengan SL/TP verified.")
+        log(f"BOT: posisi {symbol} adopt dengan SL verified.")
         return
-    # coba pasang ulang SL/TP
-    log(f"BOT: {symbol} tanpa protection ({msg}). Pasang SL/TP ulang.")
+    # coba pasang ulang SL
+    log(f"BOT: {symbol} tanpa protection ({msg}). Pasang SL ulang.")
     try:
-        bc.set_trading_stop(symbol, detail["side"], stop_loss=stop_loss, take_profit=take_profit)
+        bc.set_trading_stop(symbol, detail["side"], stop_loss=stop_loss)
         time.sleep(1)
         ok2, msg2 = _verify_sl_tp(symbol, action)
         if ok2:
-            log(f"BOT: {symbol} SL/TP berhasil dipasang ulang.")
+            log(f"BOT: {symbol} SL berhasil dipasang ulang.")
             return
-        log(f"BOT: {symbol} SL/TP gagal dipasang ulang ({msg2}). Emergency close.")
+        log(f"BOT: {symbol} SL gagal dipasang ulang ({msg2}). Emergency close.")
     except Exception as e:
-        log(f"BOT: set SL/TP ulang error {symbol}: {e}. Emergency close.")
+        log(f"BOT: set SL ulang error {symbol}: {e}. Emergency close.")
     _emergency_close(symbol)
 
 
@@ -363,27 +362,20 @@ def _try_entry(rm, balance, symbol, price, signal_res):
 
     entry = float(signal_res.get("entry", price))
     stop_loss = float(signal_res.get("stop_loss", 0))
-    take_profit = float(signal_res.get("take_profit", 0))
     confidence = int(signal_res.get("confidence", 0))
     setup_type = signal_res.get("setup_type", "other")
 
-    if stop_loss <= 0 or take_profit <= 0:
-        log(f"BOT: Rejected {symbol} — AI tidak beri SL/TP valid.")
+    # trailing murni: TP tidak dipakai (biarkan profit jalan), SL wajib.
+    if stop_loss <= 0:
+        log(f"BOT: Rejected {symbol} — AI tidak beri SL valid.")
         return
 
-    # validasi SL/TP sesuai arah
-    if action == "long":
-        if stop_loss >= entry or take_profit <= entry:
-            log(f"BOT: Rejected {symbol} — SL/TP tidak valid untuk LONG (SL<entry<TP).")
-            return
-    else:  # short
-        if stop_loss <= entry or take_profit >= entry:
-            log(f"BOT: Rejected {symbol} — SL/TP tidak valid untuk SHORT (TP<entry<SL).")
-            return
-
-    # R/R minimum
-    if not rm.validate_rr(action, entry, stop_loss, take_profit):
-        log(f"BOT: Rejected {symbol} — R/R < MIN_RR.")
+    # validasi SL sesuai arah
+    if action == "long" and stop_loss >= entry:
+        log(f"BOT: Rejected {symbol} — SL tidak valid untuk LONG (SL<entry).")
+        return
+    if action == "short" and stop_loss <= entry:
+        log(f"BOT: Rejected {symbol} — SL tidak valid untuk SHORT (SL>entry).")
         return
 
     # setup sangat kuat: confidence tinggi + setup jelas → boleh risiko sampai 1%
@@ -416,7 +408,7 @@ def _try_entry(rm, balance, symbol, price, signal_res):
     risk_pct = rm.current_risk(confidence=confidence, strong_setup=strong_setup)
     side_str = "Buy" if action == "long" else "Sell"
     if DRY_RUN:
-        log(f"[DRY-RUN] {action.upper()} {symbol} {qty:.6f} @ {entry} | SL={stop_loss} TP={take_profit} | risk={risk_pct*100:.2f}% conf={confidence}")
+        log(f"[DRY-RUN] {action.upper()} {symbol} {qty:.6f} @ {entry} | SL={stop_loss} | risk={risk_pct*100:.2f}% conf={confidence}")
     else:
         # #7 DUPLICATE-ORDER + #10 ONE-POSITION: cek posisi exchange SESUAT sebelum kirim order.
         # Jangan buka posisi kedua karena local state stale / signal berulang / race.
@@ -438,10 +430,10 @@ def _try_entry(rm, balance, symbol, price, signal_res):
         # bisa jadi sudah terisi. Verifikasi state Bybit sebelum lanjut.
         try:
             r = bc.create_order(side_str, qty, symbol=symbol,
-                                stop_loss=stop_loss, take_profit=take_profit)
+                                stop_loss=stop_loss)
         except Exception as e:
             log(f"BOT: create_order timeout/error {symbol}: {e}. Cek state Bybit...")
-            _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss, take_profit)
+            _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss)
             return
 
         if r.get("retCode") != 0:
@@ -464,7 +456,7 @@ def _try_entry(rm, balance, symbol, price, signal_res):
             _emergency_close(symbol)
             return
 
-        log(f"{action.upper()} {symbol} {qty:.6f} @ {entry} | SL={stop_loss} TP={take_profit} | risk={risk_pct*100:.2f}% | SL/TP verified")
+        log(f"{action.upper()} {symbol} {qty:.6f} @ {entry} | SL={stop_loss} | risk={risk_pct*100:.2f}% | SL verified")
 
     rm.start_trailing(entry, side=action)
     state.add_trade({"t": time.strftime("%H:%M:%S"), "action": f"{action.upper()} {symbol}",
@@ -670,19 +662,18 @@ def run():
                 sym = pos["symbol"]
                 direction = "long" if pos["side"] == "Buy" else "short"
                 log(f"Startup reconciliation: posisi aktif {sym} {pos['side']} qty={pos['qty']}. Ambil alih monitoring.")
-                # #12: verifikasi protection (SL/TP) ada di exchange sebelum lanjut trading.
+                # #12: verifikasi protection (SL) ada di exchange sebelum lanjut trading.
                 ok, msg = _verify_sl_tp(sym, direction)
                 if not ok:
                     log(f"Startup: posisi {sym} TANPA protection terverifikasi ({msg}).")
-                    if pos.get("stop_loss") is None or pos.get("take_profit") is None:
-                        # tidak ada SL/TP sama sekali → pasang ulang dari entry, gagal → close
+                    if pos.get("stop_loss") is None:
+                        # tidak ada SL sama sekali → pasang ulang dari entry, gagal → close
                         try:
                             sl = pos["entry"] * (1 - 0.005) if direction == "long" else pos["entry"] * (1 + 0.005)
-                            tp = pos["entry"] * (1 + 0.01) if direction == "long" else pos["entry"] * (1 - 0.01)
-                            bc.set_trading_stop(sym, pos["side"], stop_loss=sl, take_profit=tp)
-                            log(f"Startup: SL/TP {sym} dipasang ulang (SL={sl} TP={tp}).")
+                            bc.set_trading_stop(sym, pos["side"], stop_loss=sl)
+                            log(f"Startup: SL {sym} dipasang ulang (SL={sl}).")
                         except Exception as e:
-                            log(f"Startup: gagal pasang SL/TP {sym}: {e}. Emergency close.")
+                            log(f"Startup: gagal pasang SL {sym}: {e}. Emergency close.")
                             _emergency_close(sym)
                 rm.start_trailing(pos["entry"], side=direction)
                 state.update(position={"side": pos["side"], "qty": pos["qty"],

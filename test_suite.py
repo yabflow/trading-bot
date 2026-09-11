@@ -48,9 +48,12 @@ def test_ai_bad_direction_hold():
     # long tapi SL>entry (arah salah) -> hold
     r = ai_analyzer._normalize({"action": "long", "confidence": 90, "entry": 100, "stop_loss": 101, "take_profit": 105})
     assert r["action"] == "hold"
-    # short tapi TP>entry (arah salah) -> hold
-    r = ai_analyzer._normalize({"action": "short", "confidence": 90, "entry": 100, "stop_loss": 102, "take_profit": 101})
+    # short tapi SL<entry (arah salah) -> hold
+    r = ai_analyzer._normalize({"action": "short", "confidence": 90, "entry": 100, "stop_loss": 99, "take_profit": 95})
     assert r["action"] == "hold"
+    # TP tidak wajib valid (trailing murni): SL benar -> tetap entry walau TP aneh
+    r = ai_analyzer._normalize({"action": "long", "confidence": 90, "entry": 100, "stop_loss": 98, "take_profit": 0})
+    assert r["action"] == "long"
 
 
 def test_ai_non_dict_hold():
@@ -156,7 +159,7 @@ def test_verify_sl_tp_missing_sl():
     try:
         ok, msg = bot._verify_sl_tp("BTCUSDT", "long")
         assert not ok
-        assert "SL/TP" in msg
+        assert "SL" in msg
     finally:
         position_manager.get_position_detail = orig
 
@@ -323,13 +326,19 @@ def test_sell_all_verified_closed_resets_state():
         bot.DRY_RUN = orig_dry
 
 
+def _fake_chat_response():
+    return b'{"choices":[{"message":{"content":"{\\"action\\":\\"hold\\",\\"confidence\\":0,\\"entry\\":0,\\"stop_loss\\":0,\\"take_profit\\":0}"}}]}'
+
+
 def test_ai_model_routing_from_config():
-    # worker kirim model yang dipilih dashboard (via AI_MODEL), bukan fallback
-    saved = (ai_analyzer.AI_MODEL, ai_analyzer.AI_BASE_URL, ai_analyzer.AI_API_KEY)
+    # worker kirim model yang dipilih dashboard (AI_MODELS urutan), bukan fallback
+    saved = (ai_analyzer.AI_MODELS, ai_analyzer.AI_MODEL, ai_analyzer.AI_BASE_URL, ai_analyzer.AI_API_KEY)
     try:
-        ai_analyzer.AI_MODEL = "ts/thirty/deepseek-v4.1-flash"
+        ai_analyzer.AI_MODELS = ["ts/thirty/deepseek-v4-flash"]
+        ai_analyzer.AI_MODEL = ai_analyzer.AI_MODELS[0]
         ai_analyzer.AI_BASE_URL = "http://localhost:20128/v1"
         ai_analyzer.AI_API_KEY = "sk-test"
+        ai_analyzer._model_idx = 0
 
         captured = {}
 
@@ -340,7 +349,7 @@ def test_ai_model_routing_from_config():
 
             class R:
                 def read(s):
-                    return b'{"choices":[{"message":{"content":"{\\"action\\":\\"hold\\",\\"confidence\\":0,\\"entry\\":0,\\"stop_loss\\":0,\\"take_profit\\":0}"}}]}'
+                    return _fake_chat_response()
                 def __enter__(s): return s
                 def __exit__(s, *a): return False
             return R()
@@ -352,18 +361,19 @@ def test_ai_model_routing_from_config():
         finally:
             ai_analyzer.urllib.request.urlopen = orig
 
-        assert captured["body"]["model"] == "ts/thirty/deepseek-v4.1-flash"
+        assert captured["body"]["model"] == "ts/thirty/deepseek-v4-flash"
         assert captured["url"] == "http://localhost:20128/v1/chat/completions"
         assert captured["auth"] == "Bearer sk-test"
     finally:
-        ai_analyzer.AI_MODEL, ai_analyzer.AI_BASE_URL, ai_analyzer.AI_API_KEY = saved
+        ai_analyzer.AI_MODELS, ai_analyzer.AI_MODEL, ai_analyzer.AI_BASE_URL, ai_analyzer.AI_API_KEY = saved
 
 
 def test_ai_model_prefix_kept_for_9router():
-    # model dengan prefix ts/ tidak boleh di-strip/diganti sebelum dikirim
-    saved = ai_analyzer.AI_MODEL
+    # model dengan prefix ts/thirty/ tidak boleh di-strip/diganti sebelum dikirim
+    saved = ai_analyzer.AI_MODELS
     try:
-        ai_analyzer.AI_MODEL = "ts/thirty/deepseek-v4.1-flash"
+        ai_analyzer.AI_MODELS = ["ts/thirty/deepseek-v4-flash"]
+        ai_analyzer._model_idx = 0
         captured = {}
 
         def fake_urlopen(req, timeout=60):
@@ -371,7 +381,7 @@ def test_ai_model_prefix_kept_for_9router():
 
             class R:
                 def read(s):
-                    return b'{"choices":[{"message":{"content":"{\\"action\\":\\"hold\\",\\"confidence\\":0,\\"entry\\":0,\\"stop_loss\\":0,\\"take_profit\\":0}"}}]}'
+                    return _fake_chat_response()
                 def __enter__(s): return s
                 def __exit__(s, *a): return False
             return R()
@@ -382,9 +392,61 @@ def test_ai_model_prefix_kept_for_9router():
             ai_analyzer.analyze({"harga": 1}, "none")
         finally:
             ai_analyzer.urllib.request.urlopen = orig
-        assert captured["model"] == "ts/thirty/deepseek-v4.1-flash"
+        assert captured["model"] == "ts/thirty/deepseek-v4-flash"
     finally:
-        ai_analyzer.AI_MODEL = saved
+        ai_analyzer.AI_MODELS = saved
+
+
+def test_ai_retry_then_fallback_model():
+    # model 1 gagal 3x (AI_RETRY) → pindah ke model 2, model 2 sukses
+    saved = (ai_analyzer.AI_MODELS, ai_analyzer.AI_RETRY)
+    try:
+        ai_analyzer.AI_MODELS = ["ts/thirty/model-1", "ts/thirty/model-2"]
+        ai_analyzer.AI_RETRY = 3
+        ai_analyzer._model_idx = 0
+        calls = {"models": []}
+
+        def fake_urlopen(req, timeout=60):
+            model = json.loads(req.data)["model"]
+            calls["models"].append(model)
+
+            class R:
+                def read(s):
+                    if model == "ts/thirty/model-1":
+                        raise Exception("503 model_unavailable")
+                    return _fake_chat_response()
+                def __enter__(s): return s
+                def __exit__(s, *a): return False
+            return R()
+
+        orig = ai_analyzer.urllib.request.urlopen
+        ai_analyzer.urllib.request.urlopen = fake_urlopen
+        try:
+            res = ai_analyzer.analyze({"harga": 1}, "none")
+        finally:
+            ai_analyzer.urllib.request.urlopen = orig
+
+        # 3x retry model 1, lalu 1x model 2
+        assert calls["models"].count("ts/thirty/model-1") == 3
+        assert calls["models"][-1] == "ts/thirty/model-2"
+        assert res["action"] == "hold"
+    finally:
+        ai_analyzer.AI_MODELS, ai_analyzer.AI_RETRY = saved
+
+
+def test_ai_round_robin_recovery():
+    # setelah fallback ke model 2, tiap 1 jam auto cek balik ke model 1
+    import time as _t
+    saved = (ai_analyzer.AI_MODELS, ai_analyzer.AI_RECOVERY_SECONDS)
+    try:
+        ai_analyzer.AI_MODELS = ["ts/thirty/model-1", "ts/thirty/model-2"]
+        ai_analyzer.AI_RECOVERY_SECONDS = 3600
+        ai_analyzer._model_idx = 1            # sedang di model 2
+        ai_analyzer._last_recovery_check = _t.time() - 4000  # lewat 1 jam
+        assert ai_analyzer._current_model() == "ts/thirty/model-1"  # balik ke utama
+        assert ai_analyzer._model_idx == 0
+    finally:
+        ai_analyzer.AI_MODELS, ai_analyzer.AI_RECOVERY_SECONDS = saved
 
 
 def test_ai_missing_config_fails_safe():

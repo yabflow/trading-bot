@@ -168,8 +168,15 @@ input{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background
 <div class="col" style="flex:2;min-width:220px"><div class="label">API Key</div><input id="cfgKey" type="password" placeholder="sk-..."></div>
 </div>
 <div class="row" style="margin-bottom:14px">
-<div class="col" style="flex:2;min-width:220px"><div class="label">Model</div><input id="cfgModel" placeholder="model-name"></div>
+<div class="col" style="flex:2;min-width:220px"><div class="label">Model 1 (utama)</div><input id="cfgModel1" placeholder="ts/thirty/model-utama"></div>
 </div>
+<div class="row" style="margin-bottom:10px">
+<div class="col" style="flex:2;min-width:220px"><div class="label">Model 2 (cadangan)</div><input id="cfgModel2" placeholder="ts/thirty/model-cadangan-2 (opsional)"></div>
+</div>
+<div class="row" style="margin-bottom:14px">
+<div class="col" style="flex:2;min-width:220px"><div class="label">Model 3 (cadangan akhir)</div><input id="cfgModel3" placeholder="ts/thirty/model-cadangan-3 (opsional)"></div>
+</div>
+<div class="sub" style="margin-bottom:10px">Urutan prioritas: model 1 dipakai, gagal 3x → model 2, lalu model 3. Tiap 1 jam auto cek balik ke model 1.</div>
 <button class="btn btn-export" onclick="saveConfig()">💾 Simpan & Test Config</button>
 <div id="cfgMsg" style="margin-top:10px;font-size:0.85em"></div>
 </div>
@@ -288,7 +295,10 @@ try{
 const r=await fetch('/config');const d=await r.json();
 document.getElementById('cfgBase').value=d.base_url||'';
 document.getElementById('cfgKey').value=d.api_key||'';
-document.getElementById('cfgModel').value=d.model||'';
+const models=d.models||[];
+document.getElementById('cfgModel1').value=models[0]||'';
+document.getElementById('cfgModel2').value=models[1]||'';
+document.getElementById('cfgModel3').value=models[2]||'';
 }catch(e){}
 }
 async function loadBotConfig(){
@@ -345,7 +355,8 @@ ch+='<tr><td>'+c.symbol+'</td><td>'+fmt(c.price)+'</td>'+
 document.getElementById('candTable').innerHTML=ch;
 }
 async function saveConfig(){
-const body={base_url:document.getElementById('cfgBase').value.trim(),api_key:document.getElementById('cfgKey').value.trim(),model:document.getElementById('cfgModel').value.trim()};
+const models=[document.getElementById('cfgModel1').value.trim(),document.getElementById('cfgModel2').value.trim(),document.getElementById('cfgModel3').value.trim()].filter(x=>x);
+const body={base_url:document.getElementById('cfgBase').value.trim(),api_key:document.getElementById('cfgKey').value.trim(),models:models};
 const msg=document.getElementById('cfgMsg');
 msg.textContent='Menyimpan & test koneksi...';
 msg.className='yellow';
@@ -563,10 +574,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "msg": "cmd tidak dikenal"})
         elif path == "/config":
             env = _load_env()
+            models_raw = env.get("AI_MODELS") or env.get("AI_MODEL") or ""
+            models = [m.strip() for m in models_raw.split(",") if m.strip()]
             self._json({
                 "base_url": env.get("AI_BASE_URL", ""),
                 "api_key": env.get("AI_API_KEY", ""),
-                "model": env.get("AI_MODEL", ""),
+                "models": models,
             })
         elif path == "/botconfig":
             env = _load_env()
@@ -639,26 +652,27 @@ class Handler(BaseHTTPRequestHandler):
                 data = {}
             base_url = (data.get("base_url") or "").strip()
             api_key = (data.get("api_key") or "").strip()
-            model = (data.get("model") or "").strip()
+            models = [m.strip() for m in (data.get("models") or []) if m.strip()]
 
             updates = {}
             if base_url:
                 updates["AI_BASE_URL"] = base_url
             if api_key:
                 updates["AI_API_KEY"] = api_key
-            if model:
-                updates["AI_MODEL"] = model
+            if models:
+                updates["AI_MODELS"] = ",".join(models)
+                updates["AI_MODEL"] = models[0]  # backward-compat: model utama
 
             if not updates:
                 self._json({"ok": False, "msg": "tidak ada perubahan"})
                 return
 
-            # test koneksi dulu sebelum simpan
+            # test koneksi dulu sebelum simpan (cukup model utama)
             new_env = _load_env()
             new_env.update(updates)
             tb = new_env.get("AI_BASE_URL", "")
             tk = new_env.get("AI_API_KEY", "")
-            tm = new_env.get("AI_MODEL", "")
+            tm = (new_env.get("AI_MODELS") or new_env.get("AI_MODEL") or "").split(",")[0].strip()
             try:
                 ok, _ = _test_ai_connection(tb, tk, tm)
                 if not ok:
