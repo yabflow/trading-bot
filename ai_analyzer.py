@@ -7,8 +7,52 @@ from dotenv import load_dotenv
 
 load_dotenv(override=False)
 
-AI_RETRY = 3                       # retry tiap model sebelum pindah cadangan
+AI_RETRY = 1                       # 1x retry cukup; model lambat → langsung cadangan
 AI_RECOVERY_SECONDS = 900          # cek balik ke model utama tiap 15 menit
+AI_TIMEOUT = 20                    # detik; cepat gagal kalau model tidak merespon
+
+
+def _env_path():
+    return os.path.join(os.path.dirname(__file__), ".env")
+
+
+def _load_env():
+    data = {}
+    try:
+        with open(_env_path()) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                data[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return data
+
+
+def reload_config():
+    """Reload konfigurasi AI dari .env tanpa perlu restart bot.
+
+    Dipanggil di analyze() agar perubahan model dari dashboard langsung
+    aktif di proses yang sedang jalan.
+    """
+    global AI_BASE_URL, AI_API_KEY, AI_MODELS, AI_MODEL, _model_idx, _last_recovery_check
+    env = _load_env()
+    AI_BASE_URL = env.get("AI_BASE_URL", "").strip()
+    AI_API_KEY = env.get("AI_API_KEY", "").strip()
+    _models_raw = (env.get("AI_MODELS") or env.get("AI_MODEL") or "").strip()
+    new_models = [m.strip() for m in _models_raw.split(",") if m.strip()]
+    if new_models:
+        AI_MODELS = new_models
+        AI_MODEL = AI_MODELS[0]
+        _model_idx = 0
+        _last_recovery_check = time.time()
+    _require_config(AI_BASE_URL, AI_API_KEY, AI_MODELS)
+
+
+AI_BASE_URL = (os.getenv("AI_BASE_URL") or "").strip()
+AI_API_KEY = (os.getenv("AI_API_KEY") or "").strip()
 
 
 def _require_config(base_url, api_key, models):
@@ -35,7 +79,7 @@ AI_MODEL = AI_MODELS[0]  # backward-compat: model aktif saat ini
 # round-robin state: index model aktif + kapan terakhir cek pemulihan
 _model_idx = 0
 _last_recovery_check = time.time()
-_active_model = None  # model terakhir yang berhasil dipakai (untuk indikator dashboard)
+_active_model = AI_MODELS[0] if AI_MODELS else None  # model terakhir yang berhasil dipakai (untuk indikator dashboard)
 
 
 def _current_model():
@@ -156,6 +200,7 @@ def analyze_candidate(candidate_data, position="none"):
 
 def analyze(market_data, position):
     global _active_model
+    reload_config()
     prompt = PROMPT.format(market_data=json.dumps(market_data, ensure_ascii=False), position=position)
     last_err = None
     # coba setiap model (mulai dari model aktif), tiap model retry AI_RETRY kali
@@ -179,9 +224,10 @@ def _analyze_with_model(model, prompt):
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": 2000,
+        "stream": False,
     }).encode()
     req = urllib.request.Request(
-        AI_BASE_URL + "/chat/completions",
+        AI_BASE_URL.rstrip("/") + "/chat/completions",
         data=body,
         headers={
             "Authorization": "Bearer " + AI_API_KEY,
@@ -189,30 +235,39 @@ def _analyze_with_model(model, prompt):
             "User-Agent": "TradingBot/1.0",
         },
     )
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with urllib.request.urlopen(req, timeout=AI_TIMEOUT) as r:
         raw = r.read().decode("utf-8", errors="replace")
 
-    # proxy/9router kadang return SSE (text/event-stream) walau stream=False:
-    #   {json}\ndata: [DONE]\n  → ambil bagian JSON pertama saja.
+    # Proxy atau gateway bisa return standard JSON atau SSE (text/event-stream)
     content = None
-    for chunk in raw.split("data:"):
-        chunk = chunk.strip()
-        if not chunk or chunk == "[DONE]":
-            continue
-        try:
-            obj = json.loads(chunk)
-        except Exception:
-            continue
-        msg = obj.get("choices", [{}])[0].get("message", {}).get("content")
-        if msg:
-            content = msg
-            break
+    if "data:" in raw:
+        parts = []
+        for chunk in raw.split("data:"):
+            chunk = chunk.strip()
+            if not chunk or chunk == "[DONE]":
+                continue
+            try:
+                obj = json.loads(chunk)
+                choice = obj.get("choices", [{}])[0]
+                txt = choice.get("delta", {}).get("content") or choice.get("message", {}).get("content") or ""
+                if txt:
+                    parts.append(txt)
+            except Exception:
+                continue
+        if parts:
+            content = "".join(parts)
+
     if content is None:
         try:
             resp = json.loads(raw)
-            content = resp["choices"][0]["message"]["content"]
+            choice = resp.get("choices", [{}])[0]
+            content = choice.get("message", {}).get("content") or choice.get("delta", {}).get("content")
         except Exception:
-            raise ValueError("AI response kosong/streaming tak terduga")
+            pass
+
+    if not content:
+        raise ValueError("AI response kosong/streaming tak terduga")
+
     return _parse_json(content)
 
 

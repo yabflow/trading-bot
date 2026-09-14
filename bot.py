@@ -182,7 +182,15 @@ def log(msg):
 
 
 def get_balance():
-    return bc.get_wallet_balance()
+    """Saldo USDT. Return float, atau None jika balance UNKNOWN (API gagal).
+
+    None = status tidak diketahui → bot TIDAK boleh entry & TIDAK boleh trigger
+    circuit breaker. Hanya return 0.0 jika API sukses dan saldo memang 0.
+    """
+    bal = bc.get_wallet_balance()
+    if bal == bc.BALANCE_UNKNOWN:
+        return None
+    return bal
 
 
 def get_position_info():
@@ -244,11 +252,12 @@ def _est_liq_price(action, entry):
     return entry * (1 + dist)
 
 
-def _verify_sl_tp(symbol, action, expected_qty=None):
+def _verify_sl_tp(symbol, action, expected_qty=None, current_price=None):
     """Verifikasi posisi + side + size + SL/TP exchange-side setelah entry.
 
     Return (ok, msg). ok=False berarti posisi aktif tanpa protection → emergency close.
     expected_qty: jika diberikan, qty posisi harus >= expected_qty (toleransi 5%).
+    current_price: harga pasar saat ini (opsional, fetch otomatis jika tidak diberikan).
     """
     detail = pm.get_position_detail(symbol)
     if detail is None:
@@ -270,12 +279,26 @@ def _verify_sl_tp(symbol, action, expected_qty=None):
     sl = detail.get("stop_loss")
     if sl is None:
         return False, f"SL belum terpasang (SL={sl})"
-    if action == "long":
-        if not (sl < detail["entry"]):
-            return False, f"SL arah salah LONG (SL={sl} entry={detail['entry']})"
+
+    # Arah SL dinilai terhadap harga pasar SEKARANG, bukan entry. Trailing/break-even
+    # sah menggeser SL ke sisi profit (melewati entry), jadi entry bukan acuan yang benar.
+    cur = current_price
+    if cur is None:
+        try:
+            cur = float(bc.get_ticker(symbol)["result"]["list"][0]["lastPrice"])
+        except Exception:
+            cur = None
+    if cur:
+        if action == "long" and sl > cur:
+            return False, f"SL arah salah LONG (SL={sl} di atas harga {cur})"
+        if action == "short" and sl < cur:
+            return False, f"SL arah salah SHORT (SL={sl} di bawah harga {cur})"
     else:
-        if not (sl > detail["entry"]):
-            return False, f"SL arah salah SHORT (SL={sl} entry={detail['entry']})"
+        # harga tak terbaca → fallback ke entry (hanya untuk entry awal)
+        if action == "long" and sl > detail["entry"]:
+            return False, f"SL arah salah LONG (SL={sl} > entry={detail['entry']})"
+        if action == "short" and sl < detail["entry"]:
+            return False, f"SL arah salah SHORT (SL={sl} < entry={detail['entry']})"
 
     # #3: actual Bybit liqPrice — likuidasi harus jauh di luar SL, bukan hanya estimasi.
     liq = detail.get("liq_price")
@@ -355,10 +378,11 @@ def _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss):
 
 
 def _try_entry(rm, balance, symbol, price, signal_res):
+    """Coba entry. Return True jika berhasil, False jika ditolak."""
     action = signal_res.get("action", "hold")
     if action not in ("long", "short"):
         log(f"BOT: Rejected {symbol} — action {action} tidak valid.")
-        return
+        return False
 
     entry = float(signal_res.get("entry", price))
     stop_loss = float(signal_res.get("stop_loss", 0))
@@ -368,15 +392,15 @@ def _try_entry(rm, balance, symbol, price, signal_res):
     # trailing murni: TP tidak dipakai (biarkan profit jalan), SL wajib.
     if stop_loss <= 0:
         log(f"BOT: Rejected {symbol} — AI tidak beri SL valid.")
-        return
+        return False
 
     # validasi SL sesuai arah
     if action == "long" and stop_loss >= entry:
         log(f"BOT: Rejected {symbol} — SL tidak valid untuk LONG (SL<entry).")
-        return
+        return False
     if action == "short" and stop_loss <= entry:
         log(f"BOT: Rejected {symbol} — SL tidak valid untuk SHORT (SL>entry).")
-        return
+        return False
 
     # setup sangat kuat: confidence tinggi + setup jelas → boleh risiko sampai 1%
     strong_setup = confidence >= 85 and setup_type in (
@@ -385,13 +409,13 @@ def _try_entry(rm, balance, symbol, price, signal_res):
     qty = rm.position_size(balance, entry, stop_loss, confidence, strong_setup=strong_setup)
     if qty <= 0:
         log(f"BOT: Rejected {symbol} — position size 0.")
-        return
+        return False
 
     if not DRY_RUN:
         qty = bc.round_qty(qty, symbol=symbol)
         if qty <= 0:
             log(f"BOT: Rejected {symbol} — qty < minOrderQty.")
-            return
+            return False
 
         # #3: cek jarak likuidasi pakai actual Bybit liqPrice, bukan estimasi.
         # liqPrice hanya tersedia SETELAH posisi terbuka → cek di _verify_sl_tp pasca-entry.
@@ -400,10 +424,10 @@ def _try_entry(rm, balance, symbol, price, signal_res):
         if liq is not None:
             if action == "long" and liq >= stop_loss:
                 log(f"BOT: Rejected {symbol} — likuidasi {liq:.4f} terlalu dekat SL {stop_loss}.")
-                return
+                return False
             if action == "short" and liq <= stop_loss:
                 log(f"BOT: Rejected {symbol} — likuidasi {liq:.4f} terlalu dekat SL {stop_loss}.")
-                return
+                return False
 
     risk_pct = rm.current_risk(confidence=confidence, strong_setup=strong_setup)
     side_str = "Buy" if action == "long" else "Sell"
@@ -415,11 +439,11 @@ def _try_entry(rm, balance, symbol, price, signal_res):
         cur = pm.get_position()
         if isinstance(cur, dict):
             log(f"BOT: Rejected {symbol} — sudah ada posisi aktif {cur['symbol']} {cur['side']}. Skip entry (one-position rule).")
-            return
+            return False
         if cur == "UNKNOWN":
             log(f"BOT: Rejected {symbol} — status posisi UNKNOWN (API error). Tidak entry untuk cegah duplicate.")
             state.set_alert(f"Entry dibatalkan {symbol}: status posisi UNKNOWN.")
-            return
+            return False
 
         try:
             bc.set_leverage(LEVERAGE, symbol=symbol)
@@ -434,7 +458,7 @@ def _try_entry(rm, balance, symbol, price, signal_res):
         except Exception as e:
             log(f"BOT: create_order timeout/error {symbol}: {e}. Cek state Bybit...")
             _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss)
-            return
+            return False
 
         if r.get("retCode") != 0:
             state.set_alert(f"GAGAL ENTRY {symbol}: retCode={r.get('retCode')} {r.get('retMsg')}")
@@ -445,7 +469,7 @@ def _try_entry(rm, balance, symbol, price, signal_res):
             if isinstance(cur, dict) and cur["symbol"] == symbol:
                 log(f"BOT: entry ditolak tapi posisi {symbol} terbuka. Emergency close.")
                 _emergency_close(symbol)
-            return
+            return False
 
         # VERIFIKASI SL/TP exchange-side (requirement: jangan anggap sukses hanya dari retCode)
         time.sleep(1)
@@ -454,7 +478,7 @@ def _try_entry(rm, balance, symbol, price, signal_res):
             log(f"BOT: SL/TP verifikasi GAGAL {symbol}: {msg}. EMERGENCY CLOSE.")
             state.set_alert(f"SL/TP verifikasi gagal {symbol}: {msg}. Emergency close.")
             _emergency_close(symbol)
-            return
+            return False
 
         log(f"{action.upper()} {symbol} {qty:.6f} @ {entry} | SL={stop_loss} | risk={risk_pct*100:.2f}% | SL verified")
 
@@ -463,6 +487,7 @@ def _try_entry(rm, balance, symbol, price, signal_res):
                      "qty": f"{qty:.6f}", "price": entry, "pnl": 0})
     state.update(position={"side": action, "qty": qty, "entry": entry, "symbol": symbol},
                  highest_price=entry, lowest_price=entry, trailing_pct=rm.trailing_pct())
+    return True
 
 
 def _analyze_candidates(top_candidates):
@@ -503,14 +528,15 @@ def _analyze_candidates(top_candidates):
             log(f"AI error {sym}: {e}")
     state.update(ai_results=ai_results, ai_model_active=getattr(ai, "_active_model", None))
 
-    # pilih kandidat terbaik (confidence tertinggi) dari semua yang memenuhi kriteria
+    # urutkan qualified descending confidence, return list untuk fallback
     if qualified:
-        best = max(qualified, key=lambda x: int(x[0].get("confidence", 0)))
+        qualified.sort(key=lambda x: int(x[0].get("confidence", 0)), reverse=True)
         if len(qualified) > 1:
-            log(f"BOT: {len(qualified)} kandidat memenuhi kriteria, pilih terbaik: {best[1]} "
-                f"(confidence={best[0].get('confidence')})")
-        return best[0], best[1], best[2]
-    return None, None, None
+            best = qualified[0]
+            log(f"BOT: {len(qualified)} kandidat memenuhi kriteria, urutan: " +
+                ", ".join(f"{x[1]}(conf={int(x[0].get('confidence',0))})" for x in qualified))
+        return qualified
+    return None
 
 
 def _verify_protection(symbol, direction, label):
@@ -616,18 +642,33 @@ def run():
     global SELL_REQUEST
     rm = RiskManager()
     balance = get_balance()
-    rm.on_new_day(balance)
-    day_high_balance = max(balance, rm.daily_start_balance or balance)
+    if balance is None:
+        log("BALANCE UNKNOWN saat startup (API gagal). Coba ulang...")
+        for _ in range(5):
+            sleep_check(2)
+            balance = get_balance()
+            if balance is not None:
+                break
+    if balance is None:
+        log("BALANCE UNKNOWN setelah retry startup — bot tidak mulai trading sampai saldo terbaca.")
+        state.update(running=True, dry_run=DRY_RUN, balance=None,
+                     started_at=time.strftime("%Y-%m-%d %H:%M:%S"))
+        state.set_alert("BALANCE UNKNOWN saat startup. Bot menunggu saldo terbaca, tidak entry.")
+    else:
+        rm.on_new_day(balance)
+    day_high_balance = max(balance or 0, rm.daily_start_balance or balance or 0)
     consecutive_errors = 0
     last_scan = 0
 
     mode = "DRY-RUN (AMAN)" if DRY_RUN else "LIVE (DANA ASLI)"
-    state.update(running=True, dry_run=DRY_RUN, balance=balance,
+    active_model = getattr(ai, "_active_model", None) or getattr(ai, "AI_MODEL", None) or (ai.AI_MODELS[0] if getattr(ai, "AI_MODELS", None) else None)
+    state.update(running=True, dry_run=DRY_RUN, balance=balance or 0,
                  daily_start_balance=rm.daily_start_balance,
                  risk_pct=rm.current_risk(),
+                 ai_model_active=active_model,
                  started_at=time.strftime("%Y-%m-%d %H:%M:%S"))
     state.clear_alert()
-    log(f"Bot start [{mode}] FUTURES. Balance: {balance} USDT. Risk: {rm.current_risk()*100:.2f}%")
+    log(f"Bot start [{mode}] FUTURES. Balance: {balance if balance is not None else 'UNKNOWN'} USDT. Risk: {rm.current_risk()*100:.2f}%")
 
     _hold_suspend()
 
@@ -696,7 +737,19 @@ def run():
 
         try:
             balance = get_balance()
+
+            if balance is None:
+                state.set_alert("BALANCE UNKNOWN (API gagal) — bot tidak entry, tidak trigger circuit breaker.")
+                log("BALANCE UNKNOWN (API gagal) — skip entry & circuit breaker cycle ini.")
+                sleep_check(SCAN_INTERVAL)
+                continue
+
             rm.on_new_day(balance)
+
+            if balance <= 0:
+                log("Balance 0 USDT (API sukses, saldo memang 0) — skip circuit breaker & scan cycle ini.")
+                sleep_check(SCAN_INTERVAL)
+                continue
 
             if balance > day_high_balance:
                 day_high_balance = balance
@@ -750,20 +803,25 @@ def run():
                                   "price24hPcnt": c["price24hPcnt"], "score": c["score"],
                                   "reasons": c["reasons"]} for c in top]
                     state.update(candidates=cand_list)
-                    res, sym, c = _analyze_candidates(top)
-                    if res and sym:
-                        checks = guard.build_guard_checks(rm, balance,
-                                                          {"price": c["price"], "orderbook": {}, "klines_15m": []},
-                                                          "none", int(res.get("confidence", 0)))
-                        should_block, alerts, warns = guard.evaluate(checks)
-                        if alerts:
-                            for m in alerts:
-                                log(f"[GUARD] {m}")
-                        if should_block:
-                            state.set_alert(" | ".join(alerts))
-                            log("BOT: Rejected — guard kejanggalan.")
-                        elif res.get("action") in ("long", "short") and int(res.get("confidence", 0)) >= AI_CONFIDENCE_MIN:
-                            _try_entry(rm, balance, sym, c["price"], res)
+                    qualified = _analyze_candidates(top)
+                    if qualified:
+                        for res, sym, c in qualified:
+                            checks = guard.build_guard_checks(rm, balance,
+                                                              {"price": c["price"], "orderbook": {}, "klines_15m": []},
+                                                              "none", int(res.get("confidence", 0)))
+                            should_block, alerts, warns = guard.evaluate(checks)
+                            if alerts:
+                                for m in alerts:
+                                    log(f"[GUARD] {m}")
+                            if should_block:
+                                state.set_alert(" | ".join(alerts))
+                                log(f"BOT: Rejected {sym} — guard kejanggalan.")
+                                continue
+                            if res.get("action") in ("long", "short") and int(res.get("confidence", 0)) >= AI_CONFIDENCE_MIN:
+                                if _try_entry(rm, balance, sym, c["price"], res):
+                                    break  # entry sukses, lanjut posisi aktif
+                            else:
+                                log(f"BOT: Rejected {sym} — action/confidence tidak memenuhi syarat.")
                 except Exception as e:
                     log(f"Scan error: {e}")
 

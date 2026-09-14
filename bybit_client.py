@@ -33,8 +33,13 @@ def _signed_request(path, params=None, body=None):
     else:
         qs = ""
     if body:
-        qs += ("&" if qs else "") + urllib.parse.urlencode(sorted(body.items()))
-    sign_str = timestamp + API_KEY + recv_window + qs
+        # POST: tanda tangan dihitung atas body JSON (persis string yang dikirim),
+        # bukan urlencoded query. Bybit v5: sign_str = ts + key + recv_window + body_json.
+        body_str = json.dumps(body)
+        sign_str = timestamp + API_KEY + recv_window + body_str
+    else:
+        body_str = None
+        sign_str = timestamp + API_KEY + recv_window + qs
     signature = hmac.new(API_SECRET.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
     url = BASE_URL + path + ("?" + qs if qs else "")
     headers = {
@@ -44,8 +49,8 @@ def _signed_request(path, params=None, body=None):
         "X-BAPI-SIGN": signature,
         "Content-Type": "application/json",
     }
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, headers=headers, data=data, method="POST" if body else None)
+    data = body_str.encode() if body_str else None
+    req = urllib.request.Request(url, headers=headers, data=data, method="POST" if body_str else None)
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read())
 
@@ -74,13 +79,60 @@ def get_klines(symbol=None, interval="15", limit=50):
     return _public_request("/v5/market/kline", {"category": CATEGORY, "symbol": sym, "interval": interval, "limit": limit})
 
 
+BALANCE_UNKNOWN = "UNKNOWN"
+BALANCE_RETRY = 3
+
+
 def get_wallet_balance():
-    r = _signed_request("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
-    lst = r.get("result", {}).get("list", [])
-    if lst:
+    """Saldo USDT Unified Account.
+
+    Return float saldo, atau string "UNKNOWN" jika API gagal/response invalid
+    setelah 3x retry. Hanya return 0.0 jika API SUKSES dan saldo USDT memang 0.
+    API error / response kosong / retCode!=0 TIDAK pernah dianggap 0.
+    """
+    for attempt in range(1, BALANCE_RETRY + 1):
+        try:
+            r = _signed_request("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
+        except Exception as e:
+            if attempt < BALANCE_RETRY:
+                time.sleep(2 * attempt)
+                continue
+            print(f"[BALANCE] API error setelah {BALANCE_RETRY}x retry: {e}")
+            return BALANCE_UNKNOWN
+
+        if r.get("retCode") != 0:
+            if attempt < BALANCE_RETRY:
+                time.sleep(2 * attempt)
+                continue
+            print(f"[BALANCE] retCode={r.get('retCode')} {r.get('retMsg')} setelah {BALANCE_RETRY}x retry")
+            return BALANCE_UNKNOWN
+
+        lst = r.get("result", {}).get("list", [])
+        if not lst:
+            if attempt < BALANCE_RETRY:
+                time.sleep(2 * attempt)
+                continue
+            print(f"[BALANCE] response kosong (list kosong) setelah {BALANCE_RETRY}x retry")
+            return BALANCE_UNKNOWN
+
         item = lst[0]
-        return float(item.get("totalWalletBalance", 0) or item.get("totalEquity", 0) or 0)
-    return 0.0
+        try:
+            total = item.get("totalWalletBalance") or item.get("totalEquity") or 0
+            balance = float(total)
+        except (TypeError, ValueError):
+            if attempt < BALANCE_RETRY:
+                time.sleep(2 * attempt)
+                continue
+            print(f"[BALANCE] nilai saldo invalid: {total!r} setelah {BALANCE_RETRY}x retry")
+            return BALANCE_UNKNOWN
+
+        if balance > 0:
+            print(f"[BALANCE] berhasil dibaca: {balance} USDT")
+        else:
+            print(f"[BALANCE] saldo benar-benar 0 USDT (API sukses)")
+        return balance
+
+    return BALANCE_UNKNOWN
 
 
 def get_positions():

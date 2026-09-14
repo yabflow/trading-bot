@@ -8,6 +8,105 @@ import ai_analyzer
 import position_manager
 import risk_manager
 import performance
+import bybit_client
+
+# analyze() sekarang memanggil reload_config() tiap kali dipanggil.
+# Di test, reload_config() akan overwrite stub dengan .env asli → nonaktifkan.
+ai_analyzer.reload_config = lambda: None
+
+
+def _patch_balance(fn):
+    """Patch bybit_client._signed_request + percepat retry (sleep no-op)."""
+    def deco(test):
+        def wrapper():
+            orig_signed = bybit_client._signed_request
+            orig_sleep = bybit_client.time.sleep
+            orig_retry = bybit_client.BALANCE_RETRY
+            bybit_client.time.sleep = lambda s: None
+            bybit_client.BALANCE_RETRY = 3
+            bybit_client._signed_request = fn
+            try:
+                test()
+            finally:
+                bybit_client._signed_request = orig_signed
+                bybit_client.time.sleep = orig_sleep
+                bybit_client.BALANCE_RETRY = orig_retry
+        return wrapper
+    return deco
+
+
+@_patch_balance(lambda *a, **k: (_ for _ in ()).throw(Exception("network down")))
+def test_balance_api_error_unknown():
+    # API error (raise) → UNKNOWN, bukan 0
+    assert bybit_client.get_wallet_balance() == bybit_client.BALANCE_UNKNOWN
+
+
+@_patch_balance(lambda *a, **k: {"retCode": 10001, "retMsg": "bad request"})
+def test_balance_bad_retcode_unknown():
+    # retCode != 0 → UNKNOWN
+    assert bybit_client.get_wallet_balance() == bybit_client.BALANCE_UNKNOWN
+
+
+@_patch_balance(lambda *a, **k: {"retCode": 0, "result": {"list": []}})
+def test_balance_empty_response_unknown():
+    # response kosong (list kosong) → UNKNOWN, bukan 0
+    assert bybit_client.get_wallet_balance() == bybit_client.BALANCE_UNKNOWN
+
+
+@_patch_balance(lambda *a, **k: {"retCode": 0, "result": {"list": [
+    {"totalWalletBalance": "0", "totalEquity": "0"}]}})
+def test_balance_real_zero():
+    # API sukses + saldo memang 0 → 0.0 (bukan UNKNOWN)
+    assert bybit_client.get_wallet_balance() == 0.0
+
+
+@_patch_balance(lambda *a, **k: {"retCode": 0, "result": {"list": [
+    {"totalWalletBalance": "11.05", "totalEquity": "11.05"}]}})
+def test_balance_normal():
+    # API sukses + saldo normal → float
+    assert abs(bybit_client.get_wallet_balance() - 11.05) < 0.001
+
+
+@_patch_balance(lambda *a, **k: (_ for _ in ()).throw(Exception("down")))
+def test_balance_retries_then_unknown():
+    # pastikan retry benar-benar terjadi (dipanggil 3x) sebelum UNKNOWN
+    calls = []
+
+    def flaky(*a, **k):
+        calls.append(1)
+        raise Exception("down")
+
+    orig = bybit_client._signed_request
+    orig_sleep = bybit_client.time.sleep
+    bybit_client.time.sleep = lambda s: None
+    bybit_client._signed_request = flaky
+    try:
+        assert bybit_client.get_wallet_balance() == bybit_client.BALANCE_UNKNOWN
+        assert len(calls) == bybit_client.BALANCE_RETRY
+    finally:
+        bybit_client._signed_request = orig
+        bybit_client.time.sleep = orig_sleep
+
+
+def test_bot_get_balance_unknown_to_none():
+    # bot.get_balance() memetakan UNKNOWN → None (agar loop skip aman)
+    import bot
+    orig = bybit_client.get_wallet_balance
+    bybit_client.get_wallet_balance = lambda: bybit_client.BALANCE_UNKNOWN
+    try:
+        assert bot.get_balance() is None
+    finally:
+        bybit_client.get_wallet_balance = orig
+
+
+def test_bot_get_balance_normal_float():
+    import bot
+    orig = bybit_client.get_wallet_balance
+    bybit_client.get_wallet_balance = lambda: 11.05
+    try:
+        assert bot.get_balance() == 11.05
+    finally:
+        bybit_client.get_wallet_balance = orig
 
 
 def _patch(fn):
@@ -22,6 +121,77 @@ def _patch(fn):
                 position_manager.bc.get_positions = orig
         return wrapper
     return deco
+
+
+def _capture_sign():
+    """Patch hmac.new + urlopen untuk menangkap sign_str & body yang dikirim _signed_request."""
+    captured = {}
+
+    class _Resp:
+        def read(self):
+            return b'{"retCode":0,"result":{"list":[]}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    orig_hmac = bybit_client.hmac.new
+    orig_urlopen = bybit_client.urllib.request.urlopen
+
+    def fake_hmac(key, msg, digestmod):
+        captured["sign_str"] = msg.decode() if isinstance(msg, bytes) else msg
+        return orig_hmac(key, msg, digestmod)
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["body"] = req.data
+        return _Resp()
+
+    bybit_client.hmac.new = fake_hmac
+    bybit_client.urllib.request.urlopen = fake_urlopen
+    try:
+        yield captured
+    finally:
+        bybit_client.hmac.new = orig_hmac
+        bybit_client.urllib.request.urlopen = orig_urlopen
+
+
+def test_signed_post_signs_json_body():
+    # POST: sign_str harus berisi JSON body (bukan urlencoded query string)
+    gen = _capture_sign()
+    cap = next(gen)
+    try:
+        bybit_client._signed_request("/v5/order/create",
+                                     body={"category": "linear", "symbol": "CRCLUSDT",
+                                           "side": "Buy", "qty": "0.01"})
+    finally:
+        try:
+            next(gen)
+        except StopIteration:
+            pass
+    expected_json = json.dumps({"category": "linear", "symbol": "CRCLUSDT", "side": "Buy", "qty": "0.01"})
+    assert expected_json in cap["sign_str"], f"sign_str tidak berisi JSON body: {cap['sign_str']!r}"
+    assert "category=linear" not in cap["sign_str"], "POST tidak boleh menandatangani urlencoded"
+    # body yang dikirim harus JSON yang sama persis
+    assert cap["body"] == expected_json.encode()
+
+
+def test_signed_get_signs_query_string():
+    # GET (params): sign_str tetap pakai query string, tidak ada JSON body
+    gen = _capture_sign()
+    cap = next(gen)
+    try:
+        bybit_client._signed_request("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
+    finally:
+        try:
+            next(gen)
+        except StopIteration:
+            pass
+    assert "accountType=UNIFIED" in cap["sign_str"]
+    assert cap["body"] is None
+    assert cap["url"].endswith("accountType=UNIFIED")
 
 
 def test_ai_normalize_long():
@@ -97,9 +267,17 @@ def test_position_unknown_on_bad_retcode():
 def test_risk_position_size():
     rm = risk_manager.RiskManager()
     rm.consecutive_losses = 0
-    # balance 2000, risk 0.5% = 10 USDT. jarak SL 2, leverage 1 -> qty 5
-    qty = rm.position_size(2000, 100, 98)
-    assert abs(qty - 5.0) < 0.01
+    orig_lev = risk_manager.LEVERAGE
+    orig_risk = risk_manager.RISK_PER_TRADE
+    try:
+        risk_manager.LEVERAGE = 1
+        risk_manager.RISK_PER_TRADE = 0.005
+        # balance 2000, risk 0.5% = 10 USDT. jarak SL 2, leverage 1 -> qty 5
+        qty = rm.position_size(2000, 100, 98)
+        assert abs(qty - 5.0) < 0.01
+    finally:
+        risk_manager.LEVERAGE = orig_lev
+        risk_manager.RISK_PER_TRADE = orig_risk
 
 
 def test_risk_reduction_2_loss():
@@ -214,6 +392,7 @@ def test_verify_sl_tp_no_position():
 
 def test_emergency_close_verifies_zero():
     import bot
+    bot.state.clear_alert()
     calls = {"closed": False}
     orig_detail = position_manager.get_position_detail
     orig_close = bot.bc.close_position
@@ -274,10 +453,10 @@ def test_verify_sl_tp_liq_safe_long():
 def test_verify_sl_tp_liq_too_close_short():
     import bot
     orig = position_manager.get_position_detail
-    # liqPrice 103 di bawah SL 104 → terlalu dekat (SHORT)
+    # liqPrice 103 di bawah SL 104 → terlalu dekat (SHORT), current_price di bawah SL sehingga SL valid
     position_manager.get_position_detail = lambda s: _pos(side="Sell", entry=100, sl=104, tp=95) | {"liq_price": 103.0}
     try:
-        ok, msg = bot._verify_sl_tp("BTCUSDT", "short")
+        ok, msg = bot._verify_sl_tp("BTCUSDT", "short", current_price=90)
         assert not ok
         assert "likuidasi" in msg
     finally:

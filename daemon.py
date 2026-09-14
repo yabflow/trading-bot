@@ -303,14 +303,14 @@ const models=d.models||[];
 document.getElementById('cfgModel1').value=models[0]||'';
 document.getElementById('cfgModel2').value=models[1]||'';
 document.getElementById('cfgModel3').value=models[2]||'';
-const active=d.active_model||'';
+const active=d.active_model||(models.length?models[0]:'');
 const el=document.getElementById('cfgActive');
 if(active){
 let idx=models.indexOf(active);
 let label=idx>=0?('Model '+(idx+1)+(idx===0?' (utama)':'')):active;
 el.innerHTML='<span style="color:#2ecc71">●</span> Sedang dipakai: <b>'+active+'</b> <span class="dim">['+label+']</span>';
 }else{
-el.innerHTML='<span class="dim">Belum ada model aktif (bot belum jalan).</span>';
+el.innerHTML='<span class="dim">Belum ada model aktif.</span>';
 }
 }catch(e){}
 }
@@ -550,6 +550,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"Login required")
         return False
 
+    # status cache: agar tidak baca disk tiap poll
+    status_cache = {"data": None, "ts": 0}
+    CACHE_TTL = 15  # detik
+
     def _json(self, data):
         body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(200)
@@ -573,21 +577,31 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             self._html(INDEX_HTML.encode())
         elif path == "/status":
-            state.state._load_bot_state()
-            state.state._load_trades()
-            state.state._load_history()
-            self._json(state.state.data)
+            now = time.time()
+            if now - self.status_cache["ts"] < self.CACHE_TTL and self.status_cache["data"] is not None:
+                self._json(self.status_cache["data"])
+            else:
+                state.state._load_bot_state()
+                state.state._load_trades()
+                state.state._load_history()
+                data = state.state.data
+                self.status_cache["data"] = data
+                self.status_cache["ts"] = now
+                self._json(data)
         elif path == "/action":
             cmd = qs.get("cmd", [""])[0]
             if cmd == "start":
                 ok, msg = start_bot()
+                self.status_cache["ts"] = 0  # invalidate cache
                 self._json({"ok": ok, "msg": msg})
             elif cmd == "stop":
                 ok, msg = stop_bot()
+                self.status_cache["ts"] = 0
                 self._json({"ok": ok, "msg": msg})
             elif cmd == "sell":
                 if BOT_PID and _alive(BOT_PID):
                     os.kill(BOT_PID, signal.SIGUSR1)
+                    self.status_cache["ts"] = 0
                     self._json({"ok": True, "msg": "signal sell dikirim"})
                 else:
                     self._json({"ok": False, "msg": "bot tidak jalan"})
@@ -600,14 +614,16 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"ok": False, "msg": "cmd tidak dikenal"})
         elif path == "/config":
+            state.state._load_bot_state()
             env = _load_env()
             models_raw = env.get("AI_MODELS") or env.get("AI_MODEL") or ""
             models = [m.strip() for m in models_raw.split(",") if m.strip()]
+            active = state.state.data.get("ai_model_active") or (models[0] if models else "")
             self._json({
                 "base_url": env.get("AI_BASE_URL", ""),
                 "api_key": env.get("AI_API_KEY", ""),
                 "models": models,
-                "active_model": state.state.data.get("ai_model_active"),
+                "active_model": active,
             })
         elif path == "/botconfig":
             env = _load_env()
