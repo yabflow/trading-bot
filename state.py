@@ -94,15 +94,25 @@ class BotState:
         return os.path.join(HISTORY_DIR, f"riwayat_{date_str}.json")
 
     def _load_history(self):
+        # Reset dulu + dedup by date. Sebelumnya append tanpa clear → history
+        # menumpuk duplikat tiap reload (tiap tanggal muncul puluhan kali).
+        self.data["history"] = []
         if not os.path.exists(HISTORY_DIR):
             return
+        seen = set()
         for f in sorted(os.listdir(HISTORY_DIR)):
-            if f.endswith(".json"):
-                try:
-                    with open(os.path.join(HISTORY_DIR, f)) as fp:
-                        self.data["history"].append(json.load(fp))
-                except Exception:
-                    pass
+            if not f.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(HISTORY_DIR, f)) as fp:
+                    item = json.load(fp)
+                d = item.get("date")
+                if d and d in seen:
+                    continue
+                seen.add(d)
+                self.data["history"].append(item)
+            except Exception:
+                pass
 
     def update(self, **kw):
         with self.lock:
