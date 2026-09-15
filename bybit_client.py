@@ -145,6 +145,22 @@ def get_position_info(symbol=None):
     return _signed_request("/v5/position/list", {"category": CATEGORY, "settleCoin": "USDT", "symbol": sym})
 
 
+def get_closed_pnl(symbol=None, limit=1):
+    """Realized PnL posisi yang sudah tertutup (termasuk SL/TP exchange-side).
+
+    Return entry dict pertama atau None jika gagal/kosong. Field: closedPnl (USDT),
+    avgEntryPrice, avgExitPrice, qty, side, updatedTime.
+    """
+    params = {"category": CATEGORY, "limit": str(limit)}
+    if symbol:
+        params["symbol"] = symbol
+    r = _signed_request("/v5/position/closed-pnl", params)
+    if r.get("retCode") != 0:
+        return None
+    lst = r.get("result", {}).get("list", [])
+    return lst[0] if lst else None
+
+
 def get_open_orders():
     return _signed_request("/v5/order/realtime", {"category": CATEGORY, "symbol": SYMBOL})
 

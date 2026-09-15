@@ -601,6 +601,54 @@ def test_sell_all_records_close_trade():
         bot.state.data["trades"] = bot.state.data["trades"][:before]
 
 
+def test_record_external_close():
+    # posisi hilang karena SL/TP exchange-side → harus dicatat CLOSE + PnL.
+    import bot
+    rm = risk_manager.RiskManager()
+    rm.start_trailing(100, side="long")
+    before = len(bot.state.data.get("trades", []))
+    orig_cp = bybit_client.get_closed_pnl
+    orig_save = bot.state._save_trades
+    bybit_client.get_closed_pnl = lambda sym=None, limit=1: {
+        "symbol": "BTCUSDT", "closedPnl": "-5.0", "avgEntryPrice": "100",
+        "avgExitPrice": "95", "qty": "1"}
+    bot.state._save_trades = lambda: None
+    try:
+        bot._record_external_close(rm, {"symbol": "BTCUSDT", "side": "Buy",
+                                        "entry": 100.0, "qty": 1.0})
+        trades = bot.state.data.get("trades", [])
+        assert len(trades) == before + 1
+        assert "CLOSE" in trades[-1]["action"]
+        assert abs(float(trades[-1]["pnl"]) - (-5.0)) < 0.01  # -5 USDT / 100 * 100 = -5%
+        assert rm.entry_price is None  # trailing direset
+    finally:
+        bybit_client.get_closed_pnl = orig_cp
+        bot.state._save_trades = orig_save
+        bot.state.data["trades"] = bot.state.data["trades"][:before]
+
+
+def test_record_external_close_pnl_unavailable():
+    # closed-pnl tidak tersedia → catat pnl 0, jangan tebak, jangan crash.
+    import bot
+    rm = risk_manager.RiskManager()
+    rm.start_trailing(100, side="short")
+    before = len(bot.state.data.get("trades", []))
+    orig_cp = bybit_client.get_closed_pnl
+    orig_save = bot.state._save_trades
+    bybit_client.get_closed_pnl = lambda sym=None, limit=1: None
+    bot.state._save_trades = lambda: None
+    try:
+        bot._record_external_close(rm, {"symbol": "ETHUSDT", "side": "Sell",
+                                        "entry": 100.0, "qty": 1.0})
+        trades = bot.state.data.get("trades", [])
+        assert len(trades) == before + 1
+        assert float(trades[-1]["pnl"]) == 0.0
+    finally:
+        bybit_client.get_closed_pnl = orig_cp
+        bot.state._save_trades = orig_save
+        bot.state.data["trades"] = bot.state.data["trades"][:before]
+
+
 def _fake_chat_response():
     return b'{"choices":[{"message":{"content":"{\\"action\\":\\"hold\\",\\"confidence\\":0,\\"entry\\":0,\\"stop_loss\\":0,\\"take_profit\\":0}"}}]}'
 

@@ -630,6 +630,44 @@ def _verify_protection(symbol, direction, label):
         _emergency_close(symbol)
 
 
+def _record_external_close(rm, last_pos):
+    """Posisi hilang tanpa lewat _manage_position (SL/TP exchange-side kena).
+
+    Ambil realized PnL dari Bybit closed-pnl, catat CLOSE + PnL ke state/kinerja.
+    Tanpa ini, trade yang ditutup exchange-side tidak pernah tercatat.
+    """
+    sym = last_pos.get("symbol", "")
+    entry = last_pos.get("entry", 0)
+    qty = last_pos.get("qty", 0)
+    direction = "long" if last_pos.get("side") == "Buy" else "short"
+
+    pnl_pct = None
+    price = entry
+    try:
+        cp = bc.get_closed_pnl(sym, limit=1)
+        if cp:
+            closed_usdt = float(cp.get("closedPnl", 0))
+            ep = float(cp.get("avgEntryPrice", entry) or entry)
+            xp = float(cp.get("avgExitPrice", 0) or 0)
+            q = float(cp.get("qty", qty) or qty)
+            notional = ep * q
+            pnl_pct = (closed_usdt / notional * 100) if notional else 0
+            price = xp or entry
+    except Exception as e:
+        log(f"BOT: gagal ambil closed-pnl {sym}: {e}")
+
+    if pnl_pct is None:
+        # closed-pnl tak tersedia → catat dengan pnl 0 + tandai, jangan tebak.
+        log(f"BOT: posisi {sym} hilang (close exchange-side) tapi PnL tak terbaca. Catat pnl=0.")
+        pnl_pct = 0.0
+
+    log(f"BOT: posisi {sym} {direction} ditutup exchange-side @ {price}. PnL {pnl_pct:+.2f}%")
+    state.add_trade({"t": time.strftime("%H:%M:%S"), "action": f"CLOSE {sym} ({direction})",
+                     "qty": qty, "price": price, "pnl": round(pnl_pct, 2)})
+    rm.register_result(pnl_pct > 0)
+    rm.reset_trailing()
+
+
 def _manage_position(rm, pos):
     """Kelola posisi aktif: trailing + break-even via move SL (exchange-side)."""
     sym = pos.get("symbol", "BTCUSDT")
@@ -739,6 +777,7 @@ def run():
     day_high_balance = max(balance or 0, rm.daily_start_balance or balance or 0)
     consecutive_errors = 0
     last_scan = 0
+    last_pos = None  # posisi pada iterasi sebelumnya (deteksi close exchange-side)
 
     mode = "DRY-RUN (AMAN)" if DRY_RUN else "LIVE (DANA ASLI)"
     active_model = getattr(ai, "_active_model", None) or getattr(ai, "AI_MODEL", None) or (ai.AI_MODELS[0] if getattr(ai, "AI_MODELS", None) else None)
@@ -869,6 +908,18 @@ def run():
                 log("BOT: status posisi UNKNOWN (API error). Skip entry/monitor sampai jelas.")
                 sleep_check(10)
                 continue
+
+            # Deteksi close exchange-side: sebelumnya ada posisi, sekarang hilang.
+            # (SL/TP kena di Bybit → bot tak lewat _manage_position → wajib dicatat di sini.)
+            if last_pos is not None and not has_pos:
+                try:
+                    _record_external_close(rm, last_pos)
+                    state.update(highest_price=None, lowest_price=None)
+                except Exception as e:
+                    log(f"BOT: catat close exchange-side error: {e}")
+                last_pos = None
+            elif has_pos:
+                last_pos = pos
 
             # === SCAN + entry hanya jika TIDAK ada posisi ===
             if not has_pos and time.time() - last_scan >= SCAN_INTERVAL:
