@@ -507,6 +507,32 @@ def _alive(pid):
         return False
 
 
+def _adopt_bot_pid():
+    """Ambil alih PID bot dari bot.pid (untuk kasus daemon restart).
+
+    Daemon restart kehilangan BOT_PID in-memory, padahal bot mungkin masih
+    jalan. Baca bot.pid; kalau prosesnya masih hidup → adopsi, kalau tidak
+    → bersihkan pid file & sync running=False.
+    """
+    global BOT_PID
+    pid_file = os.path.join(BASE_DIR, "bot.pid")
+    try:
+        with open(pid_file) as f:
+            raw = f.read().strip()
+        pid = int(raw) if raw else None
+    except (OSError, ValueError):
+        pid = None
+    if pid and _alive(pid):
+        BOT_PID = pid
+    elif pid:
+        # pid file ada tapi proses mati → stale, bersihkan.
+        try:
+            os.remove(pid_file)
+        except OSError:
+            pass
+        state.state.update(running=False)
+
+
 def _pump_log(proc):
     global BOT_PID
     for line in proc.stdout:
@@ -585,6 +611,13 @@ class Handler(BaseHTTPRequestHandler):
                 state.state._load_trades()
                 state.state._load_history()
                 data = state.state.data
+                # Reconcile running dengan keadaan proses bot sebenarnya, bukan
+                # percaya flag di bot_state.json (bisa stale setelah daemon restart
+                # atau bot mati tanpa update state).
+                if BOT_PID is None:
+                    _adopt_bot_pid()
+                if BOT_PID is not None:
+                    data["running"] = _alive(BOT_PID)
                 self.status_cache["data"] = data
                 self.status_cache["ts"] = now
                 self._json(data)
@@ -858,6 +891,7 @@ def _test_ai_connection(base_url, api_key, model):
 def main():
     if not AUTH_ENABLED:
         print("WARNING: DASH_USER / DASH_PASS tidak diset di .env — semua endpoint akan 401 (fail-closed).")
+    _adopt_bot_pid()
     srv = HTTPServer(("0.0.0.0", PORT), Handler)
     print(f"Daemon jalan: http://0.0.0.0:{PORT}")
     try:

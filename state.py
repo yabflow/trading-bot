@@ -25,6 +25,7 @@ class BotState:
             "cooldown": False,
             "position": None,
             "highest_price": None,
+            "lowest_price": None,
             "trailing_pct": 0.0,
             "last_ai_action": None,
             "last_ai_confidence": 0,

@@ -425,6 +425,10 @@ def _try_entry(rm, balance, symbol, price, signal_res):
     take_profit = float(signal_res.get("take_profit", 0))
     confidence = int(signal_res.get("confidence", 0))
     setup_type = signal_res.get("setup_type", "other")
+    
+    # Harga fill aktual (untuk trailing/Break-even hitung profit benar).
+    # Untuk DRY_RUN belum ada posisi → pakai AI entry sebagai placeholder.
+    actual_entry = entry
 
     # Dapatkan harga pasar real-time dari Bybit ticker
     cur = None
@@ -528,8 +532,7 @@ def _try_entry(rm, balance, symbol, price, signal_res):
 
         # Ambil harga fill AKTUAL (avgPrice) dari exchange, bukan entry sinyal AI.
         # Market order bisa terisi di harga berbeda dari entry AI; pakai harga
-        # yang salah bikin trailing/bek-even hitung profit keliru.
-        actual_entry = entry
+        # yang salah bikin trailing/break-even hitung profit keliru.
         try:
             detail = pm.get_position_detail(symbol)
             if isinstance(detail, dict) and detail.get("entry"):
