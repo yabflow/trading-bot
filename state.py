@@ -64,7 +64,7 @@ class BotState:
                 for k in ("running", "dry_run", "started_at", "balance",
                           "daily_start_balance", "daily_pnl_pct", "daily_pnl_usdt",
                           "risk_pct", "consecutive_losses", "cooldown", "position",
-                          "highest_price", "trailing_pct", "last_ai_action",
+                          "highest_price", "lowest_price", "trailing_pct", "last_ai_action",
                           "last_ai_confidence", "last_ai_reason", "last_ai_time",
                           "ai_model_active",
                           "last_update", "alert", "scanned_pairs", "candidates", "ai_results", "log"):
@@ -78,7 +78,7 @@ class BotState:
             keys = ("running", "dry_run", "started_at", "balance",
                     "daily_start_balance", "daily_pnl_pct", "daily_pnl_usdt",
                     "risk_pct", "consecutive_losses", "cooldown", "position",
-                    "highest_price", "trailing_pct", "last_ai_action",
+                    "highest_price", "lowest_price", "trailing_pct", "last_ai_action",
                     "last_ai_confidence", "last_ai_reason", "last_ai_time",
                     "ai_model_active",
                     "last_update", "alert", "scanned_pairs", "candidates", "ai_results", "log")

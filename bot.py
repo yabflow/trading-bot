@@ -526,11 +526,22 @@ def _try_entry(rm, balance, symbol, price, signal_res):
 
         log(f"{action.upper()} {symbol} {qty:.6f} @ {entry} | SL={stop_loss} | risk={risk_pct*100:.2f}% | SL verified")
 
-    rm.start_trailing(entry, side=action)
+        # Ambil harga fill AKTUAL (avgPrice) dari exchange, bukan entry sinyal AI.
+        # Market order bisa terisi di harga berbeda dari entry AI; pakai harga
+        # yang salah bikin trailing/bek-even hitung profit keliru.
+        actual_entry = entry
+        try:
+            detail = pm.get_position_detail(symbol)
+            if isinstance(detail, dict) and detail.get("entry"):
+                actual_entry = detail["entry"]
+        except Exception:
+            pass
+
+    rm.start_trailing(actual_entry, side=action)
     state.add_trade({"t": time.strftime("%H:%M:%S"), "action": f"{action.upper()} {symbol}",
-                     "qty": f"{qty:.6f}", "price": entry, "pnl": 0})
-    state.update(position={"side": action, "qty": qty, "entry": entry, "symbol": symbol},
-                 highest_price=entry, lowest_price=entry, trailing_pct=rm.trailing_pct())
+                     "qty": f"{qty:.6f}", "price": actual_entry, "pnl": 0})
+    state.update(position={"side": action, "qty": qty, "entry": actual_entry, "symbol": symbol},
+                 highest_price=actual_entry, lowest_price=actual_entry, trailing_pct=rm.trailing_pct())
     return True
 
 
