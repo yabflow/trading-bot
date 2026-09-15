@@ -11,6 +11,17 @@ HISTORY_DIR = os.path.join(BASE_DIR, "riwayat_transaksi")
 
 
 def _load_all_trades():
+    # Sumber utama trade = trades.json (diisi state.add_trade, termasuk CLOSE).
+    # Riwayat harian hanyalah snapshot yang bisa ketinggalan CLOSE terakhir.
+    import json
+    trades_file = os.path.join(BASE_DIR, "trades.json")
+    if os.path.exists(trades_file):
+        try:
+            with open(trades_file) as fp:
+                return json.load(fp)
+        except Exception:
+            pass
+    # fallback: gabung dari riwayat harian (kalau trades.json tidak ada)
     trades = []
     if not os.path.exists(HISTORY_DIR):
         return trades
@@ -18,7 +29,6 @@ def _load_all_trades():
         if not f.endswith(".json"):
             continue
         try:
-            import json
             with open(os.path.join(HISTORY_DIR, f)) as fp:
                 data = json.load(fp)
             for t in data.get("trades", []):
