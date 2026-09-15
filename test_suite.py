@@ -571,6 +571,33 @@ def test_sell_all_verified_closed_resets_state():
         bot.DRY_RUN = orig_dry
 
 
+def test_sell_all_records_close_trade():
+    # sell_all harus catat CLOSE + PnL supaya tab Kinerja tidak kosong.
+    import bot
+    rm = risk_manager.RiskManager()
+    rm.start_trailing(100, side="long")
+    before = len(bot.state.data.get("trades", []))
+    orig_sell = position_manager.sell_all
+    orig_get = position_manager.get_position
+    orig_dry = bot.DRY_RUN
+    bot.DRY_RUN = False
+    position_manager.sell_all = lambda: [{"retCode": 0}, "VERIFIED-CLOSED", "ORDERS-CLEAN"]
+    position_manager.get_position = lambda: {
+        "symbol": "BTCUSDT", "side": "Buy", "qty": 1.0, "entry": 100.0,
+        "unrealisedPnl": 5.0, "stop_loss": 98.0, "take_profit": None, "liq_price": None}
+    try:
+        bot.sell_all(rm)
+        trades = bot.state.data.get("trades", [])
+        assert len(trades) == before + 1
+        assert "CLOSE" in trades[-1]["action"]
+        assert abs(float(trades[-1]["pnl"]) - 5.0) < 0.01  # 5 USDT / (100*1) *100 = 5%
+    finally:
+        position_manager.sell_all = orig_sell
+        position_manager.get_position = orig_get
+        bot.DRY_RUN = orig_dry
+        bot.state.data["trades"] = bot.state.data["trades"][:before]
+
+
 def _fake_chat_response():
     return b'{"choices":[{"message":{"content":"{\\"action\\":\\"hold\\",\\"confidence\\":0,\\"entry\\":0,\\"stop_loss\\":0,\\"take_profit\\":0}"}}]}'
 

@@ -200,6 +200,14 @@ def get_position_info():
 
 def sell_all(rm):
     log("MENUTUP SEMUA POSISI...")
+    # Tangkap posisi + PnL SEBELUM close agar bisa dicatat sebagai CLOSE.
+    # Tanpa ini, tab Kinerja selalu kosong (0 trade CLOSE) walau sudah trading.
+    pos_before = None
+    if not DRY_RUN:
+        try:
+            pos_before = pm.get_position()
+        except Exception:
+            pos_before = None
     if not DRY_RUN:
         try:
             r = pm.sell_all()
@@ -220,6 +228,20 @@ def sell_all(rm):
             return
     else:
         log("[DRY-RUN] close semua (skip)")
+
+    # Catat CLOSE + PnL (manual close / circuit breaker / stop) agar masuk kinerja.
+    if isinstance(pos_before, dict) and pos_before.get("entry"):
+        entry = pos_before.get("entry", 0)
+        qty = pos_before.get("qty", 0)
+        unreal = float(pos_before.get("unrealisedPnl", 0))
+        notional = entry * qty
+        pnl_pct = (unreal / notional * 100) if notional else 0
+        direction = "long" if pos_before.get("side") == "Buy" else "short"
+        state.add_trade({"t": time.strftime("%H:%M:%S"),
+                         "action": f"CLOSE {pos_before.get('symbol','')} ({direction})",
+                         "qty": qty, "price": entry, "pnl": round(pnl_pct, 2)})
+        rm.register_result(pnl_pct > 0)
+
     rm.reset_trailing()
     state.update(position=None, highest_price=None, lowest_price=None)
 
