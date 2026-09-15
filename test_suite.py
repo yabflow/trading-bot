@@ -319,6 +319,72 @@ def _pos(side="Buy", qty=0.1, entry=100, sl=98, tp=105):
             "liq_price": None}
 
 
+def test_validate_sl_tp_long_valid():
+    import bot
+    ok, msg = bot._validate_sl_tp("long", entry=100, stop_loss=98, take_profit=105, cur=99)
+    assert ok, msg
+
+
+def test_validate_sl_tp_short_valid():
+    import bot
+    ok, msg = bot._validate_sl_tp("short", entry=100, stop_loss=102, take_profit=95, cur=101)
+    assert ok, msg
+
+
+def test_validate_sl_tp_long_invalid_sl_above_market():
+    import bot
+    ok, msg = bot._validate_sl_tp("long", entry=100, stop_loss=101, take_profit=105, cur=99)
+    assert not ok
+    assert "SL" in msg
+
+
+def test_validate_sl_tp_short_invalid_sl_below_market():
+    import bot
+    ok, msg = bot._validate_sl_tp("short", entry=100, stop_loss=99, take_profit=95, cur=101)
+    assert not ok
+    assert "SL" in msg
+
+
+def test_validate_sl_tp_long_invalid_sl_equal_entry():
+    import bot
+    ok, msg = bot._validate_sl_tp("long", entry=100, stop_loss=100, take_profit=105, cur=99)
+    assert not ok
+    assert "SL" in msg
+
+
+def test_validate_sl_tp_short_invalid_sl_equal_market():
+    import bot
+    ok, msg = bot._validate_sl_tp("short", entry=100, stop_loss=102, take_profit=95, cur=102)
+    assert not ok
+    assert "SL" in msg
+
+
+def test_validate_sl_tp_long_invalid_tp_below_entry():
+    import bot
+    ok, msg = bot._validate_sl_tp("long", entry=100, stop_loss=98, take_profit=99, cur=99)
+    assert not ok
+    assert "TP" in msg
+
+
+def test_validate_sl_tp_short_invalid_tp_above_market():
+    import bot
+    ok, msg = bot._validate_sl_tp("short", entry=100, stop_loss=102, take_profit=96, cur=95)
+    assert not ok
+    assert "TP" in msg
+
+
+def test_validate_sl_tp_trailing_no_tp():
+    import bot
+    ok, msg = bot._validate_sl_tp("long", entry=100, stop_loss=98, take_profit=0, cur=99)
+    assert ok, msg
+
+
+def test_validate_sl_tp_invalid_action():
+    import bot
+    ok, msg = bot._validate_sl_tp("hold", entry=100, stop_loss=98, take_profit=105, cur=99)
+    assert not ok
+
+
 def test_verify_sl_tp_ok_long():
     import bot
     orig = position_manager.get_position_detail

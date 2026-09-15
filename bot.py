@@ -377,6 +377,42 @@ def _reconcile_after_order_timeout(symbol, action, entry, qty, stop_loss):
     _emergency_close(symbol)
 
 
+def _validate_sl_tp(action, entry, stop_loss, take_profit, cur):
+    """Hard validation arah SL/TP sebelum order dikirim ke Bybit.
+
+    LONG : SL < harga, TP > harga.
+    SHORT: SL > harga, TP < harga.
+    Harga acuan: market (cur) + entry. SL wajib, TP opsional (trailing murni).
+    Salah arah (termasuk tepat di sisi salah / sama dengan harga) → reject.
+    Tidak pernah membalik atau mengubah SL/TP dari AI.
+    Return (ok, reason)."""
+    if stop_loss is None or stop_loss <= 0:
+        return False, "SL tidak valid (kosong/<=0)"
+    if action == "long":
+        if stop_loss >= entry:
+            return False, f"SL {stop_loss} >= entry {entry} (LONG butuh SL < entry)"
+        if stop_loss >= cur:
+            return False, f"SL {stop_loss} >= harga {cur} (LONG butuh SL < harga)"
+        if take_profit is not None and take_profit > 0:
+            if take_profit <= entry:
+                return False, f"TP {take_profit} <= entry {entry} (LONG butuh TP > entry)"
+            if take_profit <= cur:
+                return False, f"TP {take_profit} <= harga {cur} (LONG butuh TP > harga)"
+    elif action == "short":
+        if stop_loss <= entry:
+            return False, f"SL {stop_loss} <= entry {entry} (SHORT butuh SL > entry)"
+        if stop_loss <= cur:
+            return False, f"SL {stop_loss} <= harga {cur} (SHORT butuh SL > harga)"
+        if take_profit is not None and take_profit > 0:
+            if take_profit >= entry:
+                return False, f"TP {take_profit} >= entry {entry} (SHORT butuh TP < entry)"
+            if take_profit >= cur:
+                return False, f"TP {take_profit} >= harga {cur} (SHORT butuh TP < harga)"
+    else:
+        return False, f"action {action} tidak valid"
+    return True, "SL/TP arah benar"
+
+
 def _try_entry(rm, balance, symbol, price, signal_res):
     """Coba entry. Return True jika berhasil, False jika ditolak."""
     action = signal_res.get("action", "hold")
@@ -386,20 +422,28 @@ def _try_entry(rm, balance, symbol, price, signal_res):
 
     entry = float(signal_res.get("entry", price))
     stop_loss = float(signal_res.get("stop_loss", 0))
+    take_profit = float(signal_res.get("take_profit", 0))
     confidence = int(signal_res.get("confidence", 0))
     setup_type = signal_res.get("setup_type", "other")
 
-    # trailing murni: TP tidak dipakai (biarkan profit jalan), SL wajib.
-    if stop_loss <= 0:
-        log(f"BOT: Rejected {symbol} — AI tidak beri SL valid.")
-        return False
+    # Dapatkan harga pasar real-time dari Bybit ticker
+    cur = None
+    try:
+        ticker = bc.get_ticker(symbol)
+        lst = ticker.get("result", {}).get("list", [])
+        if lst:
+            cur = float(lst[0].get("lastPrice", 0))
+    except Exception:
+        cur = None
+    # fallback ke entry jika gagal baca ticker (tidak boleh gagal bot karena market data)
+    if cur is None or cur <= 0:
+        cur = entry
 
-    # validasi SL sesuai arah
-    if action == "long" and stop_loss >= entry:
-        log(f"BOT: Rejected {symbol} — SL tidak valid untuk LONG (SL<entry).")
-        return False
-    if action == "short" and stop_loss <= entry:
-        log(f"BOT: Rejected {symbol} — SL tidak valid untuk SHORT (SL>entry).")
+    # Hard validation arah SL/TP vs entry & harga pasar. Salah arah → reject,
+    # JANGAN kirim order ke Bybit. Tidak pernah membalik SL/TP dari AI.
+    ok_sltp, why = _validate_sl_tp(action, entry, stop_loss, take_profit, cur)
+    if not ok_sltp:
+        log(f"BOT: Rejected {symbol} — {why}")
         return False
 
     # setup sangat kuat: confidence tinggi + setup jelas → boleh risiko sampai 1%
