@@ -580,11 +580,13 @@ def test_sell_all_records_close_trade():
     orig_sell = position_manager.sell_all
     orig_get = position_manager.get_position
     orig_dry = bot.DRY_RUN
+    orig_save = bot.state._save_trades
     bot.DRY_RUN = False
     position_manager.sell_all = lambda: [{"retCode": 0}, "VERIFIED-CLOSED", "ORDERS-CLEAN"]
     position_manager.get_position = lambda: {
         "symbol": "BTCUSDT", "side": "Buy", "qty": 1.0, "entry": 100.0,
         "unrealisedPnl": 5.0, "stop_loss": 98.0, "take_profit": None, "liq_price": None}
+    bot.state._save_trades = lambda: None  # jangan tulis ke trades.json produksi
     try:
         bot.sell_all(rm)
         trades = bot.state.data.get("trades", [])
@@ -595,6 +597,7 @@ def test_sell_all_records_close_trade():
         position_manager.sell_all = orig_sell
         position_manager.get_position = orig_get
         bot.DRY_RUN = orig_dry
+        bot.state._save_trades = orig_save
         bot.state.data["trades"] = bot.state.data["trades"][:before]
 
 
