@@ -20,6 +20,7 @@ DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
 INHIBITOR = None
 INHIBIT_LOCK = threading.Lock()
 INHIBIT_MONITOR = None
+_CLOSE_RECORDED = set()  # symbol yang CLOSE-nya sudah dicatat (cegah double-count)
 
 
 def _hold_suspend():
@@ -230,17 +231,13 @@ def sell_all(rm):
         log("[DRY-RUN] close semua (skip)")
 
     # Catat CLOSE + PnL (manual close / circuit breaker / stop) agar masuk kinerja.
+    # Pakai _record_external_close → realized PnL dari Bybit + dedup (tak dobel
+    # dengan deteksi close di loop utama).
     if isinstance(pos_before, dict) and pos_before.get("entry"):
-        entry = pos_before.get("entry", 0)
-        qty = pos_before.get("qty", 0)
-        unreal = float(pos_before.get("unrealisedPnl", 0))
-        notional = entry * qty
-        pnl_pct = (unreal / notional * 100) if notional else 0
-        direction = "long" if pos_before.get("side") == "Buy" else "short"
-        state.add_trade({"t": time.strftime("%H:%M:%S"),
-                         "action": f"CLOSE {pos_before.get('symbol','')} ({direction})",
-                         "qty": qty, "price": entry, "pnl": round(pnl_pct, 2)})
-        rm.register_result(pnl_pct > 0)
+        try:
+            _record_external_close(rm, pos_before)
+        except Exception as e:
+            log(f"BOT: catat close sell_all error: {e}")
 
     rm.reset_trailing()
     state.update(position=None, highest_price=None, lowest_price=None)
@@ -635,6 +632,7 @@ def _record_external_close(rm, last_pos):
 
     Ambil realized PnL dari Bybit closed-pnl, catat CLOSE + PnL ke state/kinerja.
     Tanpa ini, trade yang ditutup exchange-side tidak pernah tercatat.
+    Dedup pakai orderId agar tidak dobel dengan sell_all.
     """
     sym = last_pos.get("symbol", "")
     entry = last_pos.get("entry", 0)
@@ -643,9 +641,13 @@ def _record_external_close(rm, last_pos):
 
     pnl_pct = None
     price = entry
+    key = None
     try:
         cp = bc.get_closed_pnl(sym, limit=1)
         if cp:
+            key = cp.get("orderId") or f"{sym}:{cp.get('updatedTime')}"
+            if key in _CLOSE_RECORDED:
+                return  # sudah dicatat (mis. oleh sell_all)
             closed_usdt = float(cp.get("closedPnl", 0))
             ep = float(cp.get("avgEntryPrice", entry) or entry)
             xp = float(cp.get("avgExitPrice", 0) or 0)
@@ -661,6 +663,8 @@ def _record_external_close(rm, last_pos):
         log(f"BOT: posisi {sym} hilang (close exchange-side) tapi PnL tak terbaca. Catat pnl=0.")
         pnl_pct = 0.0
 
+    if key:
+        _CLOSE_RECORDED.add(key)
     log(f"BOT: posisi {sym} {direction} ditutup exchange-side @ {price}. PnL {pnl_pct:+.2f}%")
     state.add_trade({"t": time.strftime("%H:%M:%S"), "action": f"CLOSE {sym} ({direction})",
                      "qty": qty, "price": price, "pnl": round(pnl_pct, 2)})

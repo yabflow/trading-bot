@@ -579,13 +579,18 @@ def test_sell_all_records_close_trade():
     before = len(bot.state.data.get("trades", []))
     orig_sell = position_manager.sell_all
     orig_get = position_manager.get_position
+    orig_cp = bybit_client.get_closed_pnl
     orig_dry = bot.DRY_RUN
     orig_save = bot.state._save_trades
     bot.DRY_RUN = False
+    bot._CLOSE_RECORDED.clear()
     position_manager.sell_all = lambda: [{"retCode": 0}, "VERIFIED-CLOSED", "ORDERS-CLEAN"]
     position_manager.get_position = lambda: {
         "symbol": "BTCUSDT", "side": "Buy", "qty": 1.0, "entry": 100.0,
         "unrealisedPnl": 5.0, "stop_loss": 98.0, "take_profit": None, "liq_price": None}
+    bybit_client.get_closed_pnl = lambda sym=None, limit=1: {
+        "orderId": "TESTSELLALL", "closedPnl": "5.0", "avgEntryPrice": "100",
+        "avgExitPrice": "105", "qty": "1"}
     bot.state._save_trades = lambda: None  # jangan tulis ke trades.json produksi
     try:
         bot.sell_all(rm)
@@ -596,9 +601,11 @@ def test_sell_all_records_close_trade():
     finally:
         position_manager.sell_all = orig_sell
         position_manager.get_position = orig_get
+        bybit_client.get_closed_pnl = orig_cp
         bot.DRY_RUN = orig_dry
         bot.state._save_trades = orig_save
         bot.state.data["trades"] = bot.state.data["trades"][:before]
+        bot._CLOSE_RECORDED.clear()
 
 
 def test_record_external_close():
@@ -609,9 +616,10 @@ def test_record_external_close():
     before = len(bot.state.data.get("trades", []))
     orig_cp = bybit_client.get_closed_pnl
     orig_save = bot.state._save_trades
+    bot._CLOSE_RECORDED.clear()
     bybit_client.get_closed_pnl = lambda sym=None, limit=1: {
-        "symbol": "BTCUSDT", "closedPnl": "-5.0", "avgEntryPrice": "100",
-        "avgExitPrice": "95", "qty": "1"}
+        "orderId": "TESTEXT1", "symbol": "BTCUSDT", "closedPnl": "-5.0",
+        "avgEntryPrice": "100", "avgExitPrice": "95", "qty": "1"}
     bot.state._save_trades = lambda: None
     try:
         bot._record_external_close(rm, {"symbol": "BTCUSDT", "side": "Buy",
@@ -625,6 +633,32 @@ def test_record_external_close():
         bybit_client.get_closed_pnl = orig_cp
         bot.state._save_trades = orig_save
         bot.state.data["trades"] = bot.state.data["trades"][:before]
+        bot._CLOSE_RECORDED.clear()
+
+
+def test_record_external_close_dedup():
+    # order yang sama tidak boleh dicatat 2x (cegah double-count consecutive_losses).
+    import bot
+    rm = risk_manager.RiskManager()
+    before = len(bot.state.data.get("trades", []))
+    orig_cp = bybit_client.get_closed_pnl
+    orig_save = bot.state._save_trades
+    bot._CLOSE_RECORDED.clear()
+    bybit_client.get_closed_pnl = lambda sym=None, limit=1: {
+        "orderId": "SAMEDUP", "closedPnl": "-5.0", "avgEntryPrice": "100",
+        "avgExitPrice": "95", "qty": "1"}
+    bot.state._save_trades = lambda: None
+    try:
+        pos = {"symbol": "BTCUSDT", "side": "Buy", "entry": 100.0, "qty": 1.0}
+        bot._record_external_close(rm, pos)
+        bot._record_external_close(rm, pos)
+        trades = bot.state.data.get("trades", [])
+        assert len(trades) == before + 1, "order sama dicatat dobel"
+    finally:
+        bybit_client.get_closed_pnl = orig_cp
+        bot.state._save_trades = orig_save
+        bot.state.data["trades"] = bot.state.data["trades"][:before]
+        bot._CLOSE_RECORDED.clear()
 
 
 def test_record_external_close_pnl_unavailable():
@@ -635,6 +669,7 @@ def test_record_external_close_pnl_unavailable():
     before = len(bot.state.data.get("trades", []))
     orig_cp = bybit_client.get_closed_pnl
     orig_save = bot.state._save_trades
+    bot._CLOSE_RECORDED.clear()
     bybit_client.get_closed_pnl = lambda sym=None, limit=1: None
     bot.state._save_trades = lambda: None
     try:
@@ -647,6 +682,7 @@ def test_record_external_close_pnl_unavailable():
         bybit_client.get_closed_pnl = orig_cp
         bot.state._save_trades = orig_save
         bot.state.data["trades"] = bot.state.data["trades"][:before]
+        bot._CLOSE_RECORDED.clear()
 
 
 def _fake_chat_response():
