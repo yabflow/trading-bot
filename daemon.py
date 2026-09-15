@@ -618,6 +618,10 @@ class Handler(BaseHTTPRequestHandler):
                     _adopt_bot_pid()
                 if BOT_PID is not None:
                     data["running"] = _alive(BOT_PID)
+                else:
+                    # Tidak ada PID bot (file hilang & belum di-spawn daemon ini)
+                    # → bot pasti tidak jalan, koreksi flag stale dari bot_state.json.
+                    data["running"] = False
                 self.status_cache["data"] = data
                 self.status_cache["ts"] = now
                 self._json(data)
