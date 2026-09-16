@@ -673,7 +673,10 @@ def _record_external_close(rm, last_pos):
 
 
 def _manage_position(rm, pos):
-    """Kelola posisi aktif: trailing + break-even via move SL (exchange-side)."""
+    """Kelola posisi aktif: trailing + break-even via move SL (exchange-side).
+
+    Return True jika posisi ditutup di sini (agar caller reset last_pos).
+    """
     sym = pos.get("symbol", "BTCUSDT")
     side = pos.get("side", "Buy")
     direction = "long" if side == "Buy" else "short"
@@ -683,7 +686,7 @@ def _manage_position(rm, pos):
     try:
         price = float(bc.get_ticker(sym)["result"]["list"][0]["lastPrice"])
     except Exception:
-        return
+        return False
 
     if rm.entry_price is None:
         rm.start_trailing(entry, side=direction)
@@ -758,6 +761,8 @@ def _manage_position(rm, pos):
         rm.register_result(pnl > 0)
         rm.reset_trailing()
         state.update(position=None, highest_price=None, lowest_price=None)
+        return True
+    return False
 
 
 def run():
@@ -962,7 +967,8 @@ def run():
 
             # === POSISI AKTIF: kelola trailing/exit ===
             elif has_pos:
-                _manage_position(rm, pos)
+                if _manage_position(rm, pos):
+                    last_pos = None  # sudah ditutup & dicatat → jangan detect ulang
 
         except Exception as e:
             consecutive_errors += 1
