@@ -108,37 +108,45 @@ Data kandidat (lengkap):
 Posisi saat ini: {position}
 
 Analisis yang WAJIB dilakukan:
-1. TREND: arah tren di 15m, 1h, 4h. Searah sempurna tidak wajib — yang penting TF dominan (1h/4h) tidak bertentangan keras dengan arah entry.
-2. KONTEKS BTC: apakah BTC (arus besar) mendukung? BTC flat/netral masih boleh entry jika setup coin kuat.
-3. SUPPORT/RESISTANCE: apakah harga dekat resistance (risiko ditolak) atau dekat support (potensi bounce)?
-4. VOLUME: volume naik mendukung. Volume flat boleh jika ada katalis lain (breakout, momentum kuat).
-5. RISK/REWARD: apakah potensi profit >= 1.5x risiko? Hitung dari entry ke TP vs entry ke SL.
+1. MARKET REGIME: baca field market_regime. Ini kondisi pasar BTC saat ini (bull/bear/sideways/high_vol/panic). Wajib hormati:
+   - bear/panic → JANGAN LONG melawan arus. Prioritaskan SHORT atau hold. LONG hanya kalau setup reversal sangat kuat.
+   - bull → JANGAN SHORT melawan arus. Prioritaskan LONG atau hold.
+   - sideways → boleh LONG/SHORT hanya kalau setup coin sangat jelas, R/R >= 1.5.
+   - high_vol → hati-hati, SL harus lebih lebar dari ATR.
+2. FUTURES DATA: baca field futures (funding_rate, open_interest, long_short_ratio).
+   - funding_rate sangat positif (>>0.01%) = long overleveraged → risiko koreksi turun.
+   - funding_rate sangat negatif = short overleveraged → risiko squeeze naik.
+   - open_interest delta naik + harga naik = trend kuat; OI turun = posisi ditutup (trend melemah).
+   - long_short_ratio > 0.7 = mayoritas long (crowded) → risiko reversal turun.
+3. TREND: arah tren di 5m, 15m, 1h, 4h. Searah sempurna tidak wajib — TF dominan (1h/4h) tidak boleh bertentangan keras dengan arah entry.
+4. SUPPORT/RESISTANCE: harga dekat resistance (risiko ditolak) atau support (potensi bounce)?
+5. VOLUME: volume naik mendukung arah.
+6. RISK/REWARD: potensi profit >= 1.5x risiko.
 
 Arah trading (LONG/SHORT):
-- long: masuk beli, untung jika harga NAIK. SL di bawah entry, TP di atas entry.
-- short: masuk jual, untung jika harga TURUN. SL di atas entry, TP di bawah entry.
-- Pilih short hanya jika tren dominan bearish & BTC mendukung penurunan.
+- long: untung jika harga NAIK. SL di bawah entry, TP di atas entry.
+- short: untung jika harga TURUN. SL di atas entry, TP di bawah entry.
+- Pilih arah yang SEJALAN dengan market regime, jangan melawan.
 
 CONTOH analisis BAGUS (long layak):
-"BTC netral, SOLUSDT 15m/1h bullish, 4h netral, harga bounce dari support 105.2 dengan volume naik, RSI 52 sehat. Entry 105.5, SL 103.5, TP 109.5 (R/R 2.0)."
+"Regime bull, BTC 4h/1h bullish, SOLUSDT 15m/1h bullish, harga bounce dari support 105.2 volume naik, RSI 52. Entry 105.5, SL 103.5, TP 109.5 (R/R 2.0)."
 
 CONTOH analisis BAGUS (short layak):
-"BTC bearish, ETHUSDT 15m/1h/4h bearish, breakdown support 3000 volume naik, RSI 35. Entry 2995, SL 3020, TP 2910 (R/R 3.4)."
+"Regime bear, BTC 4h/1h bearish, funding positif tinggi (long crowded), ETHUSDT 15m/1h/4h bearish, breakdown support 3000 volume naik. Entry 2995, SL 3020, TP 2910 (R/R 3.4)."
 
 CONTOH analisis BURUK (harus hold):
-"harga naik 10% tapi BTC bearish kuat, 1h/4h bearish keras melawan arus, volume turun, tepat di resistance kuat. Risiko ditolak tinggi."
+"Regime bear tapi ingin LONG altcoin yang 15m naik sedikit — melawan arus BTC bearish, R/R tidak kompensasi risiko. Hold."
 
-CONFIDENCE (0-100) — wajib isi dengan jujur, jangan selalu 0:
-- 80-100: setup sangat kuat, multi-TF searah, volume konfirmasi, R/R bagus.
-- 60-79: setup layak, mayoritas faktor mendukung, R/R memadai.
-- 40-59: setup marginal, ada konflik kecil antar TF.
-- 0-39: setup lemah/tidak jelas → hold.
+CONFIDENCE (0-100) — wajib isi jujur:
+- 80-100: setup sangat kuat, multi-TF searah, regime mendukung, volume konfirmasi, R/R bagus.
+- 60-79: setup layak, mayoritas faktor mendukung.
+- 40-59: setup marginal, ada konflik.
+- 0-39: setup lemah / melawan regime → hold.
 
 KEPUTUSAN:
-- Entry jika setup layak (confidence >= 60) dan R/R >= 1.5.
-- Hold jika confidence < 60, R/R < 1.5, atau melawan arus BTC keras.
-- Jangan tuntut sempurna — cari setup yang LAYAK dengan R/R memadai.
-- Lebih baik tidak trading daripada setup jelek, tapi jangan melewatkan setup bagus hanya karena ada konflik kecil.
+- Entry jika setup layak (confidence >= 60) dan R/R >= 1.5 dan SEJALAN dengan market regime.
+- Hold jika confidence < 60, R/R < 1.5, atau melawan market regime keras.
+- Lebih baik tidak trading daripada melawan arus regime.
 
 Balas HANYA JSON (tanpa teks lain):
 {{"action":"long"|"short"|"hold","confidence":0-100,"entry":angka,"stop_loss":angka,"take_profit":angka,"setup_type":"breakout|momentum|pullback|trend_continuation|volume_spike|other","reason":"satu kalimat"}}"""

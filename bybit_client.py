@@ -79,6 +79,53 @@ def get_klines(symbol=None, interval="15", limit=50):
     return _public_request("/v5/market/kline", {"category": CATEGORY, "symbol": sym, "interval": interval, "limit": limit})
 
 
+def get_funding_rate(symbol=None):
+    """Funding rate terakhir. Positif = long bayar short (long overleveraged)."""
+    sym = symbol or SYMBOL
+    r = _public_request("/v5/market/funding/history", {"category": CATEGORY, "symbol": sym, "limit": 1})
+    lst = r.get("result", {}).get("list", [])
+    if not lst:
+        return None
+    try:
+        return float(lst[0].get("fundingRate", 0))
+    except (ValueError, TypeError):
+        return None
+
+
+def get_open_interest(symbol=None):
+    """Open Interest + delta (perubahan OI antar 2 titik terakhir)."""
+    sym = symbol or SYMBOL
+    r = _public_request("/v5/market/open-interest",
+                        {"category": CATEGORY, "symbol": sym, "intervalTime": "5min", "limit": 2})
+    lst = r.get("result", {}).get("list", [])
+    if not lst:
+        return None
+    try:
+        cur = float(lst[0].get("openInterest", 0))
+        prev = float(lst[1].get("openInterest", 0)) if len(lst) > 1 else cur
+        delta = (cur - prev) / prev * 100 if prev else 0
+        return {"oi": cur, "oi_delta_pct": round(delta, 3)}
+    except (ValueError, TypeError, ZeroDivisionError):
+        return None
+
+
+def get_long_short_ratio(symbol=None):
+    """Long/short ratio (account ratio). buyRatio > 0.5 = mayoritas long."""
+    sym = symbol or SYMBOL
+    r = _public_request("/v5/market/account-ratio",
+                        {"category": CATEGORY, "symbol": sym, "period": "5min", "limit": 1})
+    lst = r.get("result", {}).get("list", [])
+    if not lst:
+        return None
+    try:
+        return {
+            "buy_ratio": float(lst[0].get("buyRatio", 0)),
+            "sell_ratio": float(lst[0].get("sellRatio", 0)),
+        }
+    except (ValueError, TypeError):
+        return None
+
+
 BALANCE_UNKNOWN = "UNKNOWN"
 BALANCE_RETRY = 3
 

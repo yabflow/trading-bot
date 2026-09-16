@@ -143,9 +143,12 @@ def _indicators(candles):
 
     # breakout: close terakhir > high N candle sebelumnya (resistance)
     breakout = None
+    breakdown = None
     if len(closes) >= 20:
         prev_high = max(c["high"] for c in candles[-20:-1])
+        prev_low = min(c["low"] for c in candles[-20:-1])
         breakout = closes[-1] > prev_high
+        breakdown = closes[-1] < prev_low
 
     # volatility: rentang (high-low) relatif
     recent = candles[-10:]
@@ -161,6 +164,7 @@ def _indicators(candles):
         "momentum_5": round(mom_5, 2),
         "vol_spike": round(vol_spike, 2),
         "breakout": bool(breakout),
+        "breakdown": bool(breakdown),
         "avg_range_pct": round(avg_range, 2),
         "atr": round(atr, 6) if atr is not None else None,
         "atr_pct": round((atr / price * 100), 2) if atr is not None and price else None,
@@ -213,11 +217,18 @@ def _score(c, ind):
     if ind.get("trend") == "bullish":
         score += 3.0
         reasons.append("trend-up")
+    elif ind.get("trend") == "bearish":
+        # setup SHORT juga layak dipertimbangkan (bukan cuma long)
+        score += 3.0
+        reasons.append("trend-down")
 
-    # breakout
+    # breakout (long) / breakdown (short)
     if ind.get("breakout"):
         score += 5.0
         reasons.append("breakout")
+    if ind.get("breakdown"):
+        score += 5.0
+        reasons.append("breakdown")
 
     # RSI ideal (40-65 = momentum sehat belum overbought)
     rsi = ind.get("rsi")
@@ -227,6 +238,10 @@ def _score(c, ind):
     elif rsi is not None and rsi < 30:
         score += 1.0
         reasons.append("oversold")
+    elif rsi is not None and rsi > 70:
+        # overbought → potensi short / koreksi
+        score += 1.0
+        reasons.append("overbought")
 
     # volatilitas sehat (tidak terlalu flat)
     ar = ind.get("avg_range_pct", 0)
@@ -379,6 +394,60 @@ def get_btc_context():
         return {}
 
 
+def get_market_regime():
+    """Klasifikasi kondisi market (BTC) jadi regime yang jelas untuk AI.
+
+    Regime: bull / bear / sideways / high_vol / panic.
+    Pakai BTC 4h+1h trend, RSI, ATR + futures data (funding, OI, long/short ratio).
+    """
+    regime = {"regime": "unknown", "detail": {}}
+    try:
+        btc_4h = _fetch_klines("BTCUSDT", "240", limit=30)
+        btc_1h = _fetch_klines("BTCUSDT", "60", limit=30)
+        ind_4h = _indicators(btc_4h) if btc_4h else {}
+        ind_1h = _indicators(btc_1h) if btc_1h else {}
+
+        trend_4h = ind_4h.get("trend", "netral")
+        trend_1h = ind_1h.get("trend", "netral")
+        rsi_4h = ind_4h.get("rsi")
+        rsi_1h = ind_1h.get("rsi")
+        atr_pct = ind_4h.get("atr_pct") or ind_1h.get("atr_pct")
+
+        # futures data (BTC)
+        funding = bc.get_funding_rate("BTCUSDT")
+        oi = bc.get_open_interest("BTCUSDT")
+        ls = bc.get_long_short_ratio("BTCUSDT")
+
+        regime["detail"] = {
+            "btc_trend_4h": trend_4h, "btc_trend_1h": trend_1h,
+            "btc_rsi_4h": rsi_4h, "btc_rsi_1h": rsi_1h,
+            "btc_atr_pct": atr_pct,
+            "funding_rate": funding,
+            "open_interest": oi,
+            "long_short_ratio": ls,
+        }
+
+        # klasifikasi
+        if trend_4h == "bearish" and trend_1h == "bearish":
+            if rsi_4h is not None and rsi_4h < 30:
+                regime["regime"] = "panic" if atr_pct and atr_pct > 3 else "bear"
+            else:
+                regime["regime"] = "bear"
+        elif trend_4h == "bullish" and trend_1h == "bullish":
+            regime["regime"] = "bull"
+        elif trend_4h != trend_1h:
+            regime["regime"] = "sideways"
+        else:
+            regime["regime"] = "sideways"
+
+        # high volatility override
+        if atr_pct and atr_pct > 5 and regime["regime"] not in ("panic",):
+            regime["regime"] = "high_vol"
+    except Exception as e:
+        regime["detail"] = {"error": str(e)}
+    return regime
+
+
 def _relative_strength(symbol):
     """Relative strength: performa coin vs BTC selama ~24 jam (1h candles).
     Positif = lebih kuat dari BTC, negatif = lebih lemah."""
@@ -407,7 +476,14 @@ def enrich_full(symbol, base_candidate):
     data["support_resistance"] = _support_resistance(candles_15)
     data["volume_profile"] = _volume_profile(candles_15)
     data["btc_context"] = get_btc_context()
+    data["market_regime"] = get_market_regime()
     data["relative_strength"] = _relative_strength(symbol)
+    # futures data per-coin (funding, OI, long/short) — sentimen posisi
+    data["futures"] = {
+        "funding_rate": bc.get_funding_rate(symbol),
+        "open_interest": bc.get_open_interest(symbol),
+        "long_short_ratio": bc.get_long_short_ratio(symbol),
+    }
     data["candidate"] = {
         "symbol": symbol,
         "price": base_candidate.get("price"),
