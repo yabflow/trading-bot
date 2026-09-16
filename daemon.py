@@ -108,6 +108,7 @@ input{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background
 <button class="btn btn-stop" id="btnStop" onclick="action('stop')">⏹ STOP (sell semua)</button>
 <button class="btn btn-sell" id="btnSell" onclick="action('sell')">💰 SELL SEMUA POSISI</button>
 <button class="btn btn-export" onclick="doExport()">📄 Export Riwayat</button>
+<button class="btn btn-export" onclick="toggleCooldown()" id="btnCooldown">❄️ Cooldown OFF</button>
 </div>
 
 <div class="card">
@@ -293,6 +294,15 @@ async function doExport(){
 const r=await fetch('/action?cmd=export');
 const d=await r.json();
 alert(d.ok?'Export tersimpan: '+d.file:'Gagal: '+d.error);
+}
+let cooldownState=false;
+async function toggleCooldown(){
+cooldownState=!cooldownState;
+const cmd=cooldownState?'cooldown_on':'cooldown_off';
+const r=await fetch('/action?cmd='+cmd);
+const d=await r.json();
+document.getElementById('btnCooldown').textContent=cooldownState?'❄️ Cooldown ON':'❄️ Cooldown OFF';
+setTimeout(fetchStatus,800);
 }
 async function loadConfig(){
 try{
@@ -507,6 +517,30 @@ def _alive(pid):
         return False
 
 
+def _set_cooldown(on):
+    """Hidupkan/matikan cooldown lewat state.json (RiskManager baca saat start)."""
+    state_file = os.path.join(BASE_DIR, "state.json")
+    data = {}
+    try:
+        with open(state_file) as f:
+            data = json.load(f)
+    except Exception:
+        pass
+    if on:
+        data["cooldown_until"] = time.time() + 6 * 3600
+        msg = "cooldown AKTIF (6 jam)"
+    else:
+        data["cooldown_until"] = 0
+        data["consecutive_losses"] = 0
+        msg = "cooldown NONAKTIF + loss beruntun direset"
+    try:
+        with open(state_file, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        return False, f"gagal tulis state.json: {e}"
+    return True, msg
+
+
 def _adopt_bot_pid():
     """Ambil alih PID bot dari bot.pid (untuk kasus daemon restart).
 
@@ -642,6 +676,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "msg": "signal sell dikirim"})
                 else:
                     self._json({"ok": False, "msg": "bot tidak jalan"})
+            elif cmd in ("cooldown_on", "cooldown_off"):
+                # Toggle cooldown: tulis langsung ke state.json (dibaca RiskManager saat bot start).
+                ok, msg = _set_cooldown(cmd == "cooldown_on")
+                self.status_cache["ts"] = 0
+                self._json({"ok": ok, "msg": msg})
             elif cmd == "export":
                 try:
                     f = state.state.export_txt()
