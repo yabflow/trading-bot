@@ -559,7 +559,7 @@ def _try_entry(rm, balance, symbol, price, signal_res):
         except Exception:
             pass
 
-    rm.start_trailing(actual_entry, side=action)
+    rm.start_trailing(actual_entry, side=action, stop_loss=stop_loss)
     state.add_trade({"t": time.strftime("%H:%M:%S"), "action": f"{action.upper()} {symbol}",
                      "qty": f"{qty:.6f}", "price": actual_entry, "pnl": 0})
     state.update(position={"side": action, "qty": qty, "entry": actual_entry, "symbol": symbol},
@@ -839,7 +839,7 @@ def run():
                         except Exception as e:
                             log(f"Startup: gagal pasang SL {sym}: {e}. Emergency close.")
                             _emergency_close(sym)
-                rm.start_trailing(pos["entry"], side=direction)
+                rm.start_trailing(pos["entry"], side=direction, stop_loss=pos.get("stop_loss"))
                 state.update(position={"side": pos["side"], "qty": pos["qty"],
                                        "entry": pos["entry"], "symbol": sym})
         except Exception as e:

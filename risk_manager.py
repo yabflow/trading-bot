@@ -12,12 +12,16 @@ MAX_RISK_PER_TRADE = float(os.getenv("MAX_RISK_PER_TRADE", "0.01"))
 RISK_AFTER_2_LOSS = float(os.getenv("RISK_AFTER_2_LOSS", "0.0035"))
 RISK_AFTER_3_LOSS = float(os.getenv("RISK_AFTER_3_LOSS", "0.0025"))
 MIN_RR = float(os.getenv("MIN_RR", "1.5"))
+TRAILING_AFTER_RR = os.getenv("TRAILING_AFTER_RR", "1") == "1"  # trailing baru aktif setelah R/R terpenuhi
 TRAILING_STOP = float(os.getenv("TRAILING_STOP", "0.005"))
 DAILY_MAX_LOSS = float(os.getenv("DAILY_MAX_LOSS", "0.01"))
 COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "6"))
 BREAKEVEN_TRIGGER = float(os.getenv("BREAKEVEN_TRIGGER", "0.005"))  # profit 0.5% → SL ke entry
 TIME_STOP_HOURS = float(os.getenv("TIME_STOP_HOURS", "4"))          # stuck >4 jam → jual
 RISK_LOW_CONF = float(os.getenv("RISK_LOW_CONF", "0.0035"))         # conf 60-69 pakai risk kecil
+RISK_REDUCE_ENABLED = os.getenv("RISK_REDUCE_ENABLED", "1") == "1"  # on/off risk reduction saat loss
+COOLDOWN_ENABLED = os.getenv("COOLDOWN_ENABLED", "1") == "1"        # on/off cooldown
+COOLDOWN_AFTER_LOSS = int(os.getenv("COOLDOWN_AFTER_LOSS", "5"))    # cooldown setelah N loss beruntun
 LEVERAGE = float(os.getenv("LEVERAGE", "1"))                        # default 1x (tanpa amplifikasi)
 
 STATE_FILE = os.path.join(os.path.dirname(__file__), "state.json")
@@ -35,6 +39,7 @@ class RiskManager:
         self.entry_time = None
         self.side = None            # "long" / "short"
         self.breakeven_active = False
+        self.risk_distance = None
         self._load()
 
     def _load(self):
@@ -66,10 +71,11 @@ class RiskManager:
         return time.time() < self.cooldown_until
 
     def current_risk(self, strong_setup=False, confidence=None):
-        if self.consecutive_losses >= 3:
-            return RISK_AFTER_3_LOSS
-        if self.consecutive_losses >= 2:
-            return RISK_AFTER_2_LOSS
+        if RISK_REDUCE_ENABLED:
+            if self.consecutive_losses >= 3:
+                return RISK_AFTER_3_LOSS
+            if self.consecutive_losses >= 2:
+                return RISK_AFTER_2_LOSS
         if confidence is not None and confidence < 70:
             return RISK_LOW_CONF  # conf 60-69 → entry kecil
         if strong_setup:
@@ -85,12 +91,12 @@ class RiskManager:
         return self.daily_pnl_pct(balance) <= -DAILY_MAX_LOSS
 
     def register_result(self, won):
-        # cooldown dimatikan: tidak ada pemberhentian sementara setelah loss beruntun.
-        # Risk juga tidak diperketat (semua risk sama di .env). Loss hanya dicatat.
         if won:
             self.consecutive_losses = 0
         else:
             self.consecutive_losses += 1
+            if COOLDOWN_ENABLED and self.consecutive_losses >= COOLDOWN_AFTER_LOSS:
+                self.cooldown_until = time.time() + COOLDOWN_HOURS * 3600
         self.save()
 
     def position_size(self, balance, entry, stop_loss, confidence=None, strong_setup=False):
@@ -114,13 +120,18 @@ class RiskManager:
         reward = abs(take_profit - entry)
         return reward / risk >= MIN_RR
 
-    def start_trailing(self, entry_price, side="long"):
+    def start_trailing(self, entry_price, side="long", stop_loss=None):
         self.highest_price = entry_price if side == "long" else None
         self.lowest_price = entry_price if side == "short" else None
         self.entry_price = entry_price
         self.entry_time = time.time()
         self.side = side
         self.breakeven_active = False
+        # jarak risk awal (entry -> SL) untuk gate trailing/RR
+        if stop_loss is not None and entry_price:
+            self.risk_distance = abs(entry_price - stop_loss)
+        else:
+            self.risk_distance = None
 
     def trailing_pct(self):
         if self.entry_price is None:
@@ -169,10 +180,27 @@ class RiskManager:
         self.entry_time = None
         self.side = None
         self.breakeven_active = False
+        self.risk_distance = None
 
     def check_breakeven(self, current_price):
-        """Setelah profit >= BREAKEVEN_TRIGGER, aktifkan break-even (SL = entry)."""
+        """Setelah profit >= BREAKEVEN_TRIGGER, aktifkan break-even (SL = entry).
+
+        Kalau TRAILING_AFTER_RR aktif: break-even/trailing baru boleh aktif
+        setelah profit >= MIN_RR x jarak risk (R/R target terpenuhi), supaya
+        tidak kunci di breakeven saat profit baru kecil.
+        """
         if self.entry_price:
+            if self.side == "short":
+                profit = (self.entry_price - current_price) / self.entry_price
+            else:
+                profit = (current_price - self.entry_price) / self.entry_price
+
+            # gate R/R: profit harus >= MIN_RR x risk_distance
+            if TRAILING_AFTER_RR and self.risk_distance and self.entry_price:
+                rr_target = MIN_RR * (self.risk_distance / self.entry_price)
+                if profit < rr_target:
+                    return False
+
             if self.side == "short":
                 if current_price <= self.entry_price * (1 - BREAKEVEN_TRIGGER):
                     self.breakeven_active = True

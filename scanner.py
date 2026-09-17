@@ -263,18 +263,27 @@ def _score(c, ind):
 
 def _score_from_ticker(c):
     """Skor awal hanya dari data ticker (tanpa klines).
-    Cepat, tanpa request tambahan. Buang mayoritas sampah di sini."""
+    Cepat, tanpa request tambahan. Buang mayoritas sampah di sini.
+
+    Seimbang: koin naik ATAU turun sama-sama dapat skor (candidate SHORT juga
+    masuk radar, bukan cuma yang naik)."""
     score = 0.0
     reasons = []
     chg = c["price24hPcnt"]
-    if chg > 0:
-        score += min(chg, 15) * 1.0
-        if chg >= MIN_PRICE_CHANGE:
+    # perubahan harga besar (naik atau turun) = layak dianalisis lebih lanjut
+    if abs(chg) >= MIN_PRICE_CHANGE:
+        score += min(abs(chg), 15) * 1.0
+        if chg > 0:
             reasons.append("up-24h")
+        else:
+            reasons.append("down-24h")
     # turnover besar = likuiditas
     if c["turnover24h"] > 5_000_000:
         score += 2.0
         reasons.append("liquid")
+    elif c["turnover24h"] > 1_000_000:
+        score += 1.0
+        reasons.append("liquid-mid")
     return score, reasons
 
 

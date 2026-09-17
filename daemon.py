@@ -211,7 +211,17 @@ input{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background
 <div class="row" style="margin-bottom:10px">
 <div class="col"><div class="label">Scan Interval (detik)</div><input id="botScanInterval"></div>
 <div class="col"><div class="label">AI Confidence Min (entry)</div><input id="botAiConfMin"></div>
+<div class="col"><div class="label">Kandidat ke AI (scan)</div><select id="botScanAiCandidates"><option value="10">10</option><option value="20">20</option><option value="30">30</option><option value="40">40</option><option value="50">50</option></select></div>
+</div>
+<div class="row" style="margin-bottom:10px">
 <div class="col"><div class="label">Loss Beruntun Sekarang</div><input id="botConsecutiveLosses" type="number" step="1" min="0"></div>
+<div class="col"><div class="label">Cooldown Setelah N Loss</div><input id="botCooldownAfterLoss" type="number" step="1" min="1"></div>
+<div class="col"></div>
+</div>
+<div class="row" style="margin-bottom:10px">
+<div class="col"><div class="label">Risk Turun Saat Loss (on/off)</div><select id="botRiskReduceEnabled"><option value="1">ON</option><option value="0">OFF</option></select></div>
+<div class="col"><div class="label">Cooldown (on/off)</div><select id="botCooldownEnabled"><option value="1">ON</option><option value="0">OFF</option></select></div>
+<div class="col"><div class="label">Trailing Setelah R/R (on/off)</div><select id="botTrailingAfterRr"><option value="1">ON</option><option value="0">OFF</option></select></div>
 </div>
 <div class="row" style="margin-bottom:14px;align-items:center">
 <div class="col"><button class="btn btn-export" onclick="resetCooldown()">🧊 Reset Cooldown</button></div>
@@ -340,7 +350,12 @@ document.getElementById('botCooldownHours').value=d.cooldown_hours||'';
 document.getElementById('botTimeStopHours').value=d.time_stop_hours||'';
 document.getElementById('botScanInterval').value=d.scan_interval||'';
 document.getElementById('botAiConfMin').value=d.ai_confidence_min||'';
+document.getElementById('botScanAiCandidates').value=d.scan_ai_candidates||'20';
 document.getElementById('botConsecutiveLosses').value=d.consecutive_losses||0;
+document.getElementById('botCooldownAfterLoss').value=d.cooldown_after_loss||'5';
+document.getElementById('botRiskReduceEnabled').value=d.risk_reduce_enabled||'1';
+document.getElementById('botCooldownEnabled').value=d.cooldown_enabled||'1';
+document.getElementById('botTrailingAfterRr').value=d.trailing_after_rr||'1';
 const cd=d.cooldown_until||0;
 const now=Date.now()/1000;
 document.getElementById('cooldownStatus').textContent=(cd>now)?('Cooldown aktif sampai '+new Date(cd*1000).toLocaleTimeString()):'Cooldown tidak aktif';
@@ -362,7 +377,12 @@ cooldown_hours:document.getElementById('botCooldownHours').value.trim(),
 time_stop_hours:document.getElementById('botTimeStopHours').value.trim(),
 scan_interval:document.getElementById('botScanInterval').value.trim(),
 ai_confidence_min:document.getElementById('botAiConfMin').value.trim(),
+scan_ai_candidates:document.getElementById('botScanAiCandidates').value.trim(),
 consecutive_losses:document.getElementById('botConsecutiveLosses').value.trim(),
+cooldown_after_loss:document.getElementById('botCooldownAfterLoss').value.trim(),
+risk_reduce_enabled:document.getElementById('botRiskReduceEnabled').value.trim(),
+cooldown_enabled:document.getElementById('botCooldownEnabled').value.trim(),
+trailing_after_rr:document.getElementById('botTrailingAfterRr').value.trim(),
 };
 const msg=document.getElementById('botCfgMsg');
 msg.textContent='Menyimpan...';
@@ -737,6 +757,11 @@ class Handler(BaseHTTPRequestHandler):
                 "time_stop_hours": env.get("TIME_STOP_HOURS", "4"),
                 "scan_interval": env.get("SCAN_INTERVAL_SECONDS", "180"),
                 "ai_confidence_min": env.get("AI_CONFIDENCE_MIN", "60"),
+                "scan_ai_candidates": env.get("SCAN_AI_CANDIDATES", "20"),
+                "risk_reduce_enabled": env.get("RISK_REDUCE_ENABLED", "1"),
+                "cooldown_enabled": env.get("COOLDOWN_ENABLED", "1"),
+                "cooldown_after_loss": env.get("COOLDOWN_AFTER_LOSS", "5"),
+                "trailing_after_rr": env.get("TRAILING_AFTER_RR", "1"),
                 "consecutive_losses": _load_state_json().get("consecutive_losses", 0),
                 "cooldown_until": _load_state_json().get("cooldown_until", 0),
             })
@@ -872,6 +897,11 @@ class Handler(BaseHTTPRequestHandler):
                 "time_stop_hours": "TIME_STOP_HOURS",
                 "scan_interval": "SCAN_INTERVAL_SECONDS",
                 "ai_confidence_min": "AI_CONFIDENCE_MIN",
+                "scan_ai_candidates": "SCAN_AI_CANDIDATES",
+                "risk_reduce_enabled": "RISK_REDUCE_ENABLED",
+                "cooldown_enabled": "COOLDOWN_ENABLED",
+                "cooldown_after_loss": "COOLDOWN_AFTER_LOSS",
+                "trailing_after_rr": "TRAILING_AFTER_RR",
             }
             updates = {}
             for key, env_key in mapping.items():

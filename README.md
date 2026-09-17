@@ -75,8 +75,35 @@ Semua di `.env`. Lihat `.env.example` untuk referensi lengkap.
 Parameter AI & bot juga bisa diubah langsung dari dashboard (menu Pengaturan):
 - Config AI (base URL, key, model)
 - Pengaturan Bot (daily max loss, risk per trade, max risk, leverage, trailing stop, break-even, R/R, cooldown, time stop, scan interval, AI confidence min)
+- Jumlah kandidat ke AI (SCAN_AI_CANDIDATES: 10/20/30/40/50)
+- Risk reduction saat loss beruntun (on/off)
+- Cooldown (on/off) + jumlah loss sebelum cooldown
+- Trailing setelah R/R terpenuhi (on/off)
 
 Perubahan berlaku setelah restart bot.
+
+## Market Regime & Futures Data
+
+Bot mendeteksi kondisi pasar BTC (bull/bear/sideways/high_vol/panic) dan membaca
+data futures (funding rate, open interest, long/short ratio) untuk sentimen.
+AI diarahkan untuk:
+- Tidak LONG saat market bearish, tidak SHORT saat bullish.
+- Mendeteksi koin overbought (RSI tinggi) sebagai kandidat SHORT.
+- Hanya entry kalau R/R >= 1.5 dan searah market regime.
+
+## Risk Management
+
+- Risk per trade: konfigurable via .env (default 0.5%).
+- Risk reduction setelah loss beruntun: ON/OFF (RISK_REDUCE_ENABLED).
+- Setup sangat kuat: maks MAX_RISK_PER_TRADE.
+- Minimum R/R: 1.5x.
+- Trailing setelah R/R terpenuhi (TRAILING_AFTER_RR=1) — hindari kunci profit prematur.
+- SL/TP/trailing exchange-side (Bybit) — tetap aman walau bot mati.
+- Verifikasi SL/TP + emergency close jika protective order gagal.
+- Cek likuidasi: tolak trade jika harga likuidasi terlalu dekat SL.
+- Circuit breaker: auto close & stop kalau turun 3% dari puncak harian.
+- Daily max loss: konfigurable (DAILY_MAX_LOSS).
+- Cooldown: ON/OFF (COOLDOWN_ENABLED), aktif setelah N loss beruntun (COOLDOWN_AFTER_LOSS).
 
 Penting:
 - `DRY_RUN=1` → mode aman (tidak pakai uang asli)
@@ -87,14 +114,17 @@ Penting:
 
 ## Risk Management
 
-- Risk per trade: 0.5% normal, 0.35% (conf 60-69), 0.25% (setelah 3 loss)
-- Setup sangat kuat: maks 1% risk
-- Minimum R/R: 1.5x
-- SL/TP/trailing exchange-side (Bybit) — tetap aman walau bot mati
-- Verifikasi SL/TP + emergency close jika protective order gagal
-- Cek likuidasi: tolak trade jika harga likuidasi terlalu dekat SL
-- Circuit breaker: auto close & stop kalau turun 3% dari puncak harian
-- Daily max loss: -1%
+- Risk per trade: konfigurable via .env (default 0.5%).
+- Risk reduction setelah loss beruntun: ON/OFF (RISK_REDUCE_ENABLED).
+- Setup sangat kuat: maks MAX_RISK_PER_TRADE.
+- Minimum R/R: 1.5x.
+- Trailing setelah R/R terpenuhi (TRAILING_AFTER_RR=1) — hindari kunci profit prematur.
+- SL/TP/trailing exchange-side (Bybit) — tetap aman walau bot mati.
+- Verifikasi SL/TP + emergency close jika protective order gagal.
+- Cek likuidasi: tolak trade jika harga likuidasi terlalu dekat SL.
+- Circuit breaker: auto close & stop kalau turun 3% dari puncak harian.
+- Daily max loss: konfigurable (DAILY_MAX_LOSS).
+- Cooldown: ON/OFF (COOLDOWN_ENABLED), aktif setelah N loss beruntun (COOLDOWN_AFTER_LOSS).
 
 ## Test
 
