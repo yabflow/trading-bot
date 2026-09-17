@@ -85,12 +85,12 @@ class RiskManager:
         return self.daily_pnl_pct(balance) <= -DAILY_MAX_LOSS
 
     def register_result(self, won):
+        # cooldown dimatikan: tidak ada pemberhentian sementara setelah loss beruntun.
+        # Risk juga tidak diperketat (semua risk sama di .env). Loss hanya dicatat.
         if won:
             self.consecutive_losses = 0
         else:
             self.consecutive_losses += 1
-            if self.consecutive_losses >= 3:
-                self.cooldown_until = time.time() + COOLDOWN_HOURS * 3600
         self.save()
 
     def position_size(self, balance, entry, stop_loss, confidence=None, strong_setup=False):
