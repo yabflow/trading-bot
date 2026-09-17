@@ -108,7 +108,6 @@ input{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background
 <button class="btn btn-stop" id="btnStop" onclick="action('stop')">⏹ STOP (sell semua)</button>
 <button class="btn btn-sell" id="btnSell" onclick="action('sell')">💰 SELL SEMUA POSISI</button>
 <button class="btn btn-export" onclick="doExport()">📄 Export Riwayat</button>
-<button class="btn btn-export" onclick="toggleCooldown()" id="btnCooldown">❄️ Cooldown OFF</button>
 </div>
 
 <div class="card">
@@ -195,19 +194,28 @@ input{width:100%;padding:10px;border-radius:8px;border:1px solid #333;background
 <div class="col"><div class="label">Max Risk Per Trade</div><input id="botMaxRiskPerTrade"></div>
 </div>
 <div class="row" style="margin-bottom:10px">
+<div class="col"><div class="label">Risk Low Conf (conf 60-69)</div><input id="botRiskLowConf"></div>
+<div class="col"><div class="label">Risk After 2 Loss</div><input id="botRiskAfter2"></div>
+<div class="col"><div class="label">Risk After 3 Loss</div><input id="botRiskAfter3"></div>
+</div>
+<div class="row" style="margin-bottom:10px">
 <div class="col"><div class="label">Leverage (1 = tanpa amplifikasi)</div><input id="botLeverage"></div>
 <div class="col"><div class="label">Trailing Stop (0.005 = 0.5%)</div><input id="botTrailingStop"></div>
 <div class="col"><div class="label">Break-even Trigger (0.005 = 0.5%)</div><input id="botBreakevenTrigger"></div>
 </div>
 <div class="row" style="margin-bottom:10px">
 <div class="col"><div class="label">Min R/R Ratio</div><input id="botMinRR"></div>
-<div class="col"><div class="label">Cooldown Jam (setelah 3 loss)</div><input id="botCooldownHours"></div>
+<div class="col"><div class="label">Cooldown Jam (0 = mati)</div><input id="botCooldownHours"></div>
 <div class="col"><div class="label">Time Stop Jam</div><input id="botTimeStopHours"></div>
 </div>
-<div class="row" style="margin-bottom:14px">
+<div class="row" style="margin-bottom:10px">
 <div class="col"><div class="label">Scan Interval (detik)</div><input id="botScanInterval"></div>
 <div class="col"><div class="label">AI Confidence Min (entry)</div><input id="botAiConfMin"></div>
-<div class="col"></div>
+<div class="col"><div class="label">Loss Beruntun Sekarang</div><input id="botConsecutiveLosses" type="number" step="1" min="0"></div>
+</div>
+<div class="row" style="margin-bottom:14px;align-items:center">
+<div class="col"><button class="btn btn-export" onclick="resetCooldown()">🧊 Reset Cooldown</button></div>
+<div class="col" style="flex:2"><div class="dim" id="cooldownStatus">-</div></div>
 </div>
 <button class="btn btn-export" onclick="saveBotConfig()">💾 Simpan Pengaturan Bot</button>
 <div id="botCfgMsg" style="margin-top:10px;font-size:0.85em"></div>
@@ -295,15 +303,6 @@ const r=await fetch('/action?cmd=export');
 const d=await r.json();
 alert(d.ok?'Export tersimpan: '+d.file:'Gagal: '+d.error);
 }
-let cooldownState=false;
-async function toggleCooldown(){
-cooldownState=!cooldownState;
-const cmd=cooldownState?'cooldown_on':'cooldown_off';
-const r=await fetch('/action?cmd='+cmd);
-const d=await r.json();
-document.getElementById('btnCooldown').textContent=cooldownState?'❄️ Cooldown ON':'❄️ Cooldown OFF';
-setTimeout(fetchStatus,800);
-}
 async function loadConfig(){
 try{
 const r=await fetch('/config');const d=await r.json();
@@ -330,6 +329,9 @@ const r=await fetch('/botconfig');const d=await r.json();
 document.getElementById('botDailyMaxLoss').value=d.daily_max_loss||'';
 document.getElementById('botRiskPerTrade').value=d.risk_per_trade||'';
 document.getElementById('botMaxRiskPerTrade').value=d.max_risk_per_trade||'';
+document.getElementById('botRiskLowConf').value=d.risk_low_conf||'';
+document.getElementById('botRiskAfter2').value=d.risk_after_2_loss||'';
+document.getElementById('botRiskAfter3').value=d.risk_after_3_loss||'';
 document.getElementById('botLeverage').value=d.leverage||'';
 document.getElementById('botTrailingStop').value=d.trailing_stop||'';
 document.getElementById('botBreakevenTrigger').value=d.breakeven_trigger||'';
@@ -338,6 +340,10 @@ document.getElementById('botCooldownHours').value=d.cooldown_hours||'';
 document.getElementById('botTimeStopHours').value=d.time_stop_hours||'';
 document.getElementById('botScanInterval').value=d.scan_interval||'';
 document.getElementById('botAiConfMin').value=d.ai_confidence_min||'';
+document.getElementById('botConsecutiveLosses').value=d.consecutive_losses||0;
+const cd=d.cooldown_until||0;
+const now=Date.now()/1000;
+document.getElementById('cooldownStatus').textContent=(cd>now)?('Cooldown aktif sampai '+new Date(cd*1000).toLocaleTimeString()):'Cooldown tidak aktif';
 }catch(e){}
 }
 async function saveBotConfig(){
@@ -345,6 +351,9 @@ const body={
 daily_max_loss:document.getElementById('botDailyMaxLoss').value.trim(),
 risk_per_trade:document.getElementById('botRiskPerTrade').value.trim(),
 max_risk_per_trade:document.getElementById('botMaxRiskPerTrade').value.trim(),
+risk_low_conf:document.getElementById('botRiskLowConf').value.trim(),
+risk_after_2_loss:document.getElementById('botRiskAfter2').value.trim(),
+risk_after_3_loss:document.getElementById('botRiskAfter3').value.trim(),
 leverage:document.getElementById('botLeverage').value.trim(),
 trailing_stop:document.getElementById('botTrailingStop').value.trim(),
 breakeven_trigger:document.getElementById('botBreakevenTrigger').value.trim(),
@@ -353,13 +362,23 @@ cooldown_hours:document.getElementById('botCooldownHours').value.trim(),
 time_stop_hours:document.getElementById('botTimeStopHours').value.trim(),
 scan_interval:document.getElementById('botScanInterval').value.trim(),
 ai_confidence_min:document.getElementById('botAiConfMin').value.trim(),
+consecutive_losses:document.getElementById('botConsecutiveLosses').value.trim(),
 };
 const msg=document.getElementById('botCfgMsg');
 msg.textContent='Menyimpan...';
 msg.className='yellow';
 const r=await fetch('/botconfig',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 const d=await r.json();
-if(d.ok){msg.textContent='✅ '+d.msg;msg.className='green';}
+if(d.ok){msg.textContent='✅ '+d.msg;msg.className='green';loadBotConfig();}
+else{msg.textContent='❌ '+d.msg;msg.className='red';}
+}
+async function resetCooldown(){
+const msg=document.getElementById('botCfgMsg');
+msg.textContent='Reset cooldown...';
+msg.className='yellow';
+const r=await fetch('/botconfig',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reset_cooldown:true})});
+const d=await r.json();
+if(d.ok){msg.textContent='✅ '+d.msg;msg.className='green';loadBotConfig();}
 else{msg.textContent='❌ '+d.msg;msg.className='red';}
 }
 function renderCandidates(d){
@@ -707,6 +726,9 @@ class Handler(BaseHTTPRequestHandler):
                 "daily_max_loss": env.get("DAILY_MAX_LOSS", "0.01"),
                 "risk_per_trade": env.get("RISK_PER_TRADE", "0.005"),
                 "max_risk_per_trade": env.get("MAX_RISK_PER_TRADE", "0.01"),
+                "risk_low_conf": env.get("RISK_LOW_CONF", "0.0035"),
+                "risk_after_2_loss": env.get("RISK_AFTER_2_LOSS", "0.0035"),
+                "risk_after_3_loss": env.get("RISK_AFTER_3_LOSS", "0.0025"),
                 "leverage": env.get("LEVERAGE", "1"),
                 "trailing_stop": env.get("TRAILING_STOP", "0.005"),
                 "breakeven_trigger": env.get("BREAKEVEN_TRIGGER", "0.005"),
@@ -715,6 +737,8 @@ class Handler(BaseHTTPRequestHandler):
                 "time_stop_hours": env.get("TIME_STOP_HOURS", "4"),
                 "scan_interval": env.get("SCAN_INTERVAL_SECONDS", "180"),
                 "ai_confidence_min": env.get("AI_CONFIDENCE_MIN", "60"),
+                "consecutive_losses": _load_state_json().get("consecutive_losses", 0),
+                "cooldown_until": _load_state_json().get("cooldown_until", 0),
             })
         elif path == "/market":
             try:
@@ -837,6 +861,9 @@ class Handler(BaseHTTPRequestHandler):
                 "daily_max_loss": "DAILY_MAX_LOSS",
                 "risk_per_trade": "RISK_PER_TRADE",
                 "max_risk_per_trade": "MAX_RISK_PER_TRADE",
+                "risk_low_conf": "RISK_LOW_CONF",
+                "risk_after_2_loss": "RISK_AFTER_2_LOSS",
+                "risk_after_3_loss": "RISK_AFTER_3_LOSS",
                 "leverage": "LEVERAGE",
                 "trailing_stop": "TRAILING_STOP",
                 "breakeven_trigger": "BREAKEVEN_TRIGGER",
@@ -851,11 +878,25 @@ class Handler(BaseHTTPRequestHandler):
                 val = (data.get(key) or "").strip()
                 if val:
                     updates[env_key] = val
-            if not updates:
+
+            # state.json edits (consecutive_losses, cooldown reset)
+            state_updates = {}
+            if "consecutive_losses" in data and str(data.get("consecutive_losses", "")).strip() != "":
+                try:
+                    state_updates["consecutive_losses"] = int(float(str(data.get("consecutive_losses")).strip()))
+                except (ValueError, TypeError):
+                    pass
+            if data.get("reset_cooldown"):
+                state_updates["cooldown_until"] = 0
+
+            if not updates and not state_updates:
                 self._json({"ok": False, "msg": "tidak ada perubahan"})
                 return
-            _save_env(updates)
-            self._json({"ok": True, "msg": "pengaturan bot disimpan. Restart bot agar berlaku."})
+            if updates:
+                _save_env(updates)
+            if state_updates:
+                _save_state_json(state_updates)
+            self._json({"ok": True, "msg": "pengaturan disimpan. Restart bot agar berlaku."})
         else:
             self.send_response(404)
             self.end_headers()
@@ -863,6 +904,26 @@ class Handler(BaseHTTPRequestHandler):
 
 def _env_path():
     return os.path.join(BASE_DIR, ".env")
+
+
+def _state_json_path():
+    return os.path.join(BASE_DIR, "state.json")
+
+
+def _load_state_json():
+    try:
+        with open(_state_json_path()) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_state_json(updates):
+    data = _load_state_json()
+    data.update(updates)
+    with open(_state_json_path(), "w") as f:
+        json.dump(data, f)
+    return data
 
 
 def _load_env():
