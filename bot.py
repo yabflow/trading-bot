@@ -705,34 +705,29 @@ def _manage_position(rm, pos):
     elif rm.check_trailing(price):
         exit_reason = "trailing"
 
-    # break-even: pindah SL ke entry (exchange-side)
-    if rm.breakeven_active:
-        sl_price = entry
-        if not DRY_RUN:
-            try:
-                bc.set_trading_stop(sym, side, stop_loss=sl_price)
-                _verify_protection(sym, direction, "break-even")
-            except Exception as e:
-                log(f"Set break-even SL error: {e}")
-    else:
-        # trailing: geser SL lebih ketat sesuai trailing_pct (exchange-side)
-        try:
-            tsl_pct = rm.trailing_pct()
-            if direction == "long":
-                trail_sl = rm.highest_price * (1 - tsl_pct)
-            else:
-                trail_sl = rm.lowest_price * (1 + tsl_pct)
-            # hanya geser ke arah yang menguntungkan
-            if direction == "long" and trail_sl > entry:
+    # Trailing SL (exchange-side). Break-even = lantai minimal (SL >= entry),
+    # trailing TETAP lanjut menggeser SL mengikuti profit agar profit terkunci.
+    try:
+        tsl_pct = rm.trailing_pct()
+        if direction == "long":
+            trail_sl = rm.highest_price * (1 - tsl_pct)
+            # lantai minimal = entry (break-even), tapi jangan pernah mundur
+            if rm.breakeven_active and trail_sl < entry:
+                trail_sl = entry
+            if trail_sl > entry:
                 if not DRY_RUN:
                     bc.set_trading_stop(sym, side, stop_loss=trail_sl)
                     _verify_protection(sym, direction, "trailing")
-            elif direction == "short" and trail_sl < entry:
+        else:
+            trail_sl = rm.lowest_price * (1 + tsl_pct)
+            if rm.breakeven_active and trail_sl > entry:
+                trail_sl = entry
+            if trail_sl < entry:
                 if not DRY_RUN:
                     bc.set_trading_stop(sym, side, stop_loss=trail_sl)
                     _verify_protection(sym, direction, "trailing")
-        except Exception as e:
-            log(f"Set trailing SL error: {e}")
+    except Exception as e:
+        log(f"Set trailing SL error: {e}")
 
     if exit_reason:
         if DRY_RUN:

@@ -134,13 +134,15 @@ class RiskManager:
                 return TRAILING_STOP
             profit = (self.highest_price - self.entry_price) / self.entry_price
         if profit >= 0.10:
-            return 0.017
+            return 0.005
         if profit >= 0.06:
-            return 0.013
+            return 0.006
         if profit >= 0.03:
+            return 0.008
+        if profit >= 0.02:
             return 0.01
         if profit >= 0.01:
-            return 0.007
+            return 0.015
         return TRAILING_STOP
 
     def check_trailing(self, current_price):
