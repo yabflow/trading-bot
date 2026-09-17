@@ -189,8 +189,11 @@ def _atr(candles, period=14):
 
 
 def _score(c, ind):
-    """Skor kombinasi: momentum + volume + trend + breakout + volatilitas.
-    Bukan cuma %24h. Skor lebih tinggi = peluang teknikal lebih kuat."""
+    """Skor kombinasi SEIMBANG: momentum + volume + trend + breakout/breakdown
+    + RSI (overbought=short / oversold=long) + volatilitas.
+
+    Bukan cuma %24h dan bukan bias long. Skor tinggi = peluang teknikal kuat
+    untuk ARAH mana pun (long ATAU short)."""
     score = 0.0
     reasons = []
 
@@ -198,31 +201,30 @@ def _score(c, ind):
     chg = c["price24hPcnt"]
     if chg > 0:
         score += min(chg, 15) * 1.0
-    elif chg < -15:
-        # oversold dalam, potensi reversal
-        score += abs(chg) * 0.3
+    elif chg < 0:
+        score += min(abs(chg), 15) * 0.8
 
-    # momentum 5 candle
-    if ind.get("momentum_5", 0) > 0.5:
-        score += min(ind["momentum_5"], 5) * 1.5
+    # momentum 5 candle — searah (bisa bullish/bearish)
+    mom = ind.get("momentum_5", 0)
+    if abs(mom) > 0.5:
+        score += min(abs(mom), 5) * 1.5
         reasons.append("momentum")
 
-    # volume spike
+    # volume spike — konfirmasi arah apa pun
     vs = ind.get("vol_spike", 0)
     if vs >= MIN_VOLUME_SPIKE:
         score += min(vs, 5) * 2.0
         reasons.append(f"vol-spike-{vs:.1f}x")
 
-    # trend bullish (EMA9 > EMA21)
+    # trend (EMA9 vs EMA21) — bullish & bearish sama-sama dapat bobot
     if ind.get("trend") == "bullish":
         score += 3.0
         reasons.append("trend-up")
     elif ind.get("trend") == "bearish":
-        # setup SHORT juga layak dipertimbangkan (bukan cuma long)
         score += 3.0
         reasons.append("trend-down")
 
-    # breakout (long) / breakdown (short)
+    # breakout (long) / breakdown (short) — bobot sama
     if ind.get("breakout"):
         score += 5.0
         reasons.append("breakout")
@@ -230,23 +232,31 @@ def _score(c, ind):
         score += 5.0
         reasons.append("breakdown")
 
-    # RSI ideal (40-65 = momentum sehat belum overbought)
+    # RSI — seimbang: sehat = momentum valid, overbought = setup short,
+    # oversold = setup long (reversal).
     rsi = ind.get("rsi")
-    if rsi is not None and 40 <= rsi <= 65:
-        score += 2.0
-        reasons.append("rsi-sehat")
-    elif rsi is not None and rsi < 30:
-        score += 1.0
-        reasons.append("oversold")
-    elif rsi is not None and rsi > 70:
-        # overbought → potensi short / koreksi
-        score += 1.0
-        reasons.append("overbought")
+    if rsi is not None:
+        if 40 <= rsi <= 65:
+            score += 2.0
+            reasons.append("rsi-sehat")
+        elif rsi < 30:
+            # oversold dalam → peluang reversal LONG
+            score += 4.0
+            reasons.append("oversold-long")
+        elif rsi > 80:
+            # overbought ekstrem (koin micin sering) → peluang SHORT besar
+            score += 6.0
+            reasons.append("overbought-short")
+        elif rsi > 70:
+            # overbought → potensi short / koreksi
+            score += 4.0
+            reasons.append("overbought")
 
     # volatilitas sehat (tidak terlalu flat)
     ar = ind.get("avg_range_pct", 0)
     if 0.2 <= ar <= 3.0:
         score += 1.0
+        reasons.append("vol-sehat")
 
     return score, reasons
 

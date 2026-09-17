@@ -100,56 +100,66 @@ def _on_model_failed():
         _model_idx += 1
     return AI_MODELS[_model_idx]
 
-PROMPT = """Kamu analis trading crypto (Bybit USDT Perpetual Futures) berpengalaman. Analisis SATU kandidat coin.
+PROMPT = """Kamu trader crypto profesional di Bybit USDT Perpetual Futures dengan win rate tinggi. Analisis SATU kandidat coin dan putuskan entry atau tidak.
 
 Data kandidat (lengkap):
 {market_data}
 
 Posisi saat ini: {position}
 
-Analisis yang WAJIB dilakukan:
-1. MARKET REGIME: baca field market_regime. Ini kondisi pasar BTC saat ini (bull/bear/sideways/high_vol/panic). Wajib hormati:
-   - bear/panic → JANGAN LONG melawan arus. Prioritaskan SHORT atau hold. LONG hanya kalau setup reversal sangat kuat.
-   - bull → JANGAN SHORT melawan arus. Prioritaskan LONG atau hold.
-   - sideways → boleh LONG/SHORT hanya kalau setup coin sangat jelas, R/R >= 1.5.
-   - high_vol → hati-hati, SL harus lebih lebar dari ATR.
-2. FUTURES DATA: baca field futures (funding_rate, open_interest, long_short_ratio).
-   - funding_rate sangat positif (>>0.01%) = long overleveraged → risiko koreksi turun.
-   - funding_rate sangat negatif = short overleveraged → risiko squeeze naik.
-   - open_interest delta naik + harga naik = trend kuat; OI turun = posisi ditutup (trend melemah).
-   - long_short_ratio > 0.7 = mayoritas long (crowded) → risiko reversal turun.
-3. TREND: arah tren di 5m, 15m, 1h, 4h. Searah sempurna tidak wajib — TF dominan (1h/4h) tidak boleh bertentangan keras dengan arah entry.
-4. SUPPORT/RESISTANCE: harga dekat resistance (risiko ditolak) atau support (potensi bounce)?
-5. VOLUME: volume naik mendukung arah.
-6. RISK/REWARD: potensi profit >= 1.5x risiko.
+=== PRIORITAS #1: JANGAN RUGI (defense first) ===
+Tugas utamamu BUKAN mencari trade, tapi MENGHINDARI trade jelek. Lebih baik hold daripada rugi. Hanya entry kalau peluang menang jelas-jelas lebih besar dari risiko.
 
-Arah trading (LONG/SHORT):
-- long: untung jika harga NAIK. SL di bawah entry, TP di atas entry.
-- short: untung jika harga TURUN. SL di atas entry, TP di bawah entry.
-- Pilih arah yang SEJALAN dengan market regime, jangan melawan.
+=== ANALISIS WAJIB (urutan) ===
 
-CONTOH analisis BAGUS (long layak):
-"Regime bull, BTC 4h/1h bullish, SOLUSDT 15m/1h bullish, harga bounce dari support 105.2 volume naik, RSI 52. Entry 105.5, SL 103.5, TP 109.5 (R/R 2.0)."
+1. MARKET REGIME (field market_regime) — gerbang pertama:
+   - bear/panic: JANGAN LONG melawan arus. Cari SHORT yang searah, atau hold.
+   - bull: JANGAN SHORT melawan arus. Cari LONG yang searah, atau hold.
+   - sideways: hanya entry kalau setup coin sangat bersih dan R/R >= 2.
+   - high_vol: SL wajib lebih lebar dari ATR, atau hold.
 
-CONTOH analisis BAGUS (short layak):
-"Regime bear, BTC 4h/1h bearish, funding positif tinggi (long crowded), ETHUSDT 15m/1h/4h bearish, breakdown support 3000 volume naik. Entry 2995, SL 3020, TP 2910 (R/R 3.4)."
+2. RSI (overbought/oversold) — sinyal arah:
+   - RSI 1h/4h > 75 (apalagi > 85) = overbought ekstrem → prioritas SHORT (mean reversion), BUKAN long.
+   - RSI 1h/4h < 25 = oversold ekstrem → prioritas LONG (reversal), BUKAN short.
+   - RSI 40-65 = momentum sehat, ikuti tren.
+   - Koin micin (kapitalisasi kecil) overbought = kandidat SHORT terbaik (sering koreksi tajam).
 
-CONTOH analisis BURUK (harus hold):
-"Regime bear tapi ingin LONG altcoin yang 15m naik sedikit — melawan arus BTC bearish, R/R tidak kompensasi risiko. Hold."
+3. KESELARASAN ARAH — semua harus sepakat:
+   - TF dominan (1h/4h) HARUS searah dengan arah entry. Kalau 1h/4h berlawanan, hold.
+   - 5m/15m boleh sedikit konflik, tapi jangan entry melawan 1h/4h.
 
-CONFIDENCE (0-100) — wajib isi jujur:
-- 80-100: setup sangat kuat, multi-TF searah, regime mendukung, volume konfirmasi, R/R bagus.
-- 60-79: setup layak, mayoritas faktor mendukung.
-- 40-59: setup marginal, ada konflik.
-- 0-39: setup lemah / melawan regime → hold.
+4. FUTURES DATA (field futures):
+   - funding_rate sangat positif = long crowded → risiko koreksi turun (dukung SHORT).
+   - funding_rate sangat negatif = short crowded → risiko squeeze (jangan SHORT).
+   - long_short_ratio > 0.75 = mayoritas long (crowded) → reversal turun lebih mungkin.
+   - open_interest turun = posisi ditutup (trend melemah), jangan kejar.
 
-KEPUTUSAN:
-- Entry jika setup layak (confidence >= 60) dan R/R >= 1.5 dan SEJALAN dengan market regime.
-- Hold jika confidence < 60, R/R < 1.5, atau melawan market regime keras.
-- Lebih baik tidak trading daripada melawan arus regime.
+5. SUPPORT/RESISTANCE: entry harus dekat level yang jelas. SL di luar S/R (bukan di tengah noise). TP di level lawan yang realistis.
+
+6. VOLUME: entry butuh volume konfirmasi. Volume kering + break = fake.
+
+7. RISK/REWARD: wajib >= 1.5, idealnya >= 2. Kalau < 1.5 → hold, TIDAK ada pengecualian.
+
+=== ATURAN ENTRY (tanpa pengecualian) ===
+- action "long" hanya kalau: regime bull/sideways, 1h/4h bullish, RSI tidak overbought ekstrem, R/R >= 1.5.
+- action "short" hanya kalau: regime bear/sideways ATAU RSI overbought ekstrem, 1h/4h bearish (atau overbought untuk short mean-reversion), R/R >= 1.5.
+- Kalau ragu atau ada konflik TF keras → "hold".
+- Jangan entry hanya karena 1 faktor bagus; butuh konvergensi minimal 3 faktor searah.
+
+=== CONFIDENCE (0-100) — jujur & konsisten ===
+- 85-100: setup sempurna — regime searah, multi-TF searah, RSI ekstrem konfirmasi, volume konfirmasi, R/R >= 2.
+- 70-84: setup kuat — mayoritas faktor searah, R/R >= 1.8.
+- 60-69: setup layak — cukup faktor searah, R/R >= 1.5, sedikit konflik minor.
+- 40-59: marginal — ada konflik, sebaiknya hold.
+- 0-39: lemah / melawan regime → WAJIB hold.
+
+=== KEPUTUSAN ===
+- Entry (long/short) hanya kalau confidence >= 60 DAN R/R >= 1.5 DAN searah regime.
+- Selain itu "hold".
+- Kualitas > kuantitas. Satu trade bagus lebih baik dari sepuluh trade abu-abu.
 
 Balas HANYA JSON (tanpa teks lain):
-{{"action":"long"|"short"|"hold","confidence":0-100,"entry":angka,"stop_loss":angka,"take_profit":angka,"setup_type":"breakout|momentum|pullback|trend_continuation|volume_spike|other","reason":"satu kalimat"}}"""
+{{"action":"long"|"short"|"hold","confidence":0-100,"entry":angka,"stop_loss":angka,"take_profit":angka,"setup_type":"breakout|momentum|pullback|trend_continuation|volume_spike|reversal|other","reason":"satu kalimat padat"}}"""
 
 
 _ACTION_MAP = {"buy": "long", "sell": "short", "long": "long", "short": "short"}
