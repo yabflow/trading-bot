@@ -695,14 +695,14 @@ def _manage_position(rm, pos):
 
     # update trailing peak/trough
     rm.check_breakeven(price)
-    rm.check_trailing(price)
+    trailing_hit = rm.check_trailing(price)
     state.update(highest_price=rm.highest_price, lowest_price=rm.lowest_price,
                  trailing_pct=rm.trailing_pct())
 
     exit_reason = None
     if rm.check_time_stop():
         exit_reason = "time-stop"
-    elif rm.check_trailing(price):
+    elif trailing_hit:
         exit_reason = "trailing"
 
     # Trailing SL (exchange-side). Break-even = lantai minimal (SL >= entry),
