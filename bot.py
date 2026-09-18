@@ -10,7 +10,9 @@ import ai_analyzer as ai
 import candidate_memory
 import guard
 import position_manager as pm
+import regime_check
 import scanner
+import telegram_notifier
 from risk_manager import RiskManager, LEVERAGE
 from state import state
 
@@ -149,6 +151,7 @@ MAX_CONSECUTIVE_ERRORS = int(os.getenv("MAX_ERRORS", "10"))
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "180"))
 AI_INTERVAL = int(os.getenv("AI_INTERVAL_SECONDS", "900"))
 AI_CONFIDENCE_MIN = int(os.getenv("AI_CONFIDENCE_MIN", "50"))
+SKIP_SIDEWAYS = os.getenv("SKIP_SIDEWAYS", "1") == "1"
 
 LIVE = not DRY_RUN
 
@@ -560,10 +563,33 @@ def _try_entry(rm, balance, symbol, price, signal_res):
             pass
 
     rm.start_trailing(actual_entry, side=action, stop_loss=stop_loss)
-    state.add_trade({"t": time.strftime("%H:%M:%S"), "action": f"{action.upper()} {symbol}",
-                     "qty": f"{qty:.6f}", "price": actual_entry, "pnl": 0})
+    # Snapshot regime + AI metadata for post-trade analysis
+    try:
+        regime_snapshot = regime_check.get_regime()
+    except Exception:
+        regime_snapshot = {}
+    trade_meta = {
+        "t": time.strftime("%H:%M:%S"),
+        "action": f"{action.upper()} {symbol}",
+        "qty": f"{qty:.6f}",
+        "price": actual_entry,
+        "pnl": 0,
+        "confidence": confidence,
+        "setup_type": setup_type,
+        "reason": signal_res.get("reason", "")[:140],
+        "regime": regime_snapshot.get("regime", "unknown"),
+        "btc_trend": regime_snapshot.get("trend", "unknown"),
+        "volatility_pct": regime_snapshot.get("volatility_pct", 0.0),
+    }
+    state.add_trade(trade_meta)
+    # Telegram notifier (demo mode kalau credentials belum di-set)
+    try:
+        telegram_notifier.notify_entry(trade_meta)
+    except Exception as e:
+        log("TELEGRAM notify error: " + str(e))
     state.update(position={"side": action, "qty": qty, "entry": actual_entry, "symbol": symbol},
-                 highest_price=actual_entry, lowest_price=actual_entry, trailing_pct=rm.trailing_pct())
+        highest_price=actual_entry, lowest_price=actual_entry, trailing_pct=rm.trailing_pct(),
+        last_regime=regime_snapshot)
     return True
 
 
@@ -573,6 +599,17 @@ def _analyze_candidates(top_candidates):
     Kumpulkan SEMUA kandidat yang memenuhi kriteria, pilih yang confidence
     tertinggi — bukan yang pertama ditemukan.
     """
+    # Regime gate: skip SEMUA entry kalau BTC sideways.
+    if SKIP_SIDEWAYS:
+        try:
+            regime = regime_check.get_regime()
+            if regime.get("regime") == "sideways":
+                log("REGIME_GATE: skip semua kandidat - BTC sideways (vol=" + str(regime.get("volatility_pct")) + "%)")
+                state.update(last_regime=regime)
+                return [], []
+        except Exception as e:
+            log("REGIME_GATE error (lanjut tanpa gate): " + str(e))
+    
     mem = candidate_memory.memory
     analyzed = 0
     ai_results = []
@@ -580,6 +617,11 @@ def _analyze_candidates(top_candidates):
     for c in top_candidates[:scanner.AI_CANDIDATES]:
         sym = c["symbol"]
         score = c["score"]
+        # Symbol WR gate: skip symbol yang historically loss-prone.
+        blocked, why_block = mem.is_symbol_blocked(sym)
+        if blocked:
+            log("WR_GATE: skip " + sym + " - " + why_block)
+            continue
         should, why = mem.should_analyze(sym, score)
         if not should:
             continue
